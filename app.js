@@ -279,13 +279,26 @@ async function saveUserPreferences(fromOnboarding = false, themeOnly = false) {
   else render();
   return true;
 }
+async function requireAccessToken() {
+  if (!sb) throw new Error('Supabase client is not initialized.');
+  let result;
+  try { result = await sb.auth.getSession(); }
+  catch (error) { throw new Error(`Could not restore your SONORA sign-in: ${error?.message || 'authentication check failed'}`); }
+  if (result?.error) throw result.error;
+  const token = result?.data?.session?.access_token || '';
+  if (token) return token;
+  // The UI can briefly retain a user object after storage/session expiry. Reconcile
+  // that stale identity before showing a misleading "Auth session missing" error.
+  if (user) {
+    try { await handleAuthSession('SIGNED_OUT', null); }
+    catch (error) { console.warn('SONORA session reconciliation:', error?.message || error); }
+  }
+  throw new Error('Your SONORA sign-in session is no longer available in this browser. Please sign in again.');
+}
 async function workerRequest(path, options = {}) {
   if (!C.STREAM_URL) throw new Error('STREAM_URL is not configured in config.js.');
   if (!sb) throw new Error('Supabase client is not initialized.');
-  const { data, error } = await sb.auth.getSession();
-  if (error) throw error;
-  const token = data.session?.access_token;
-  if (!token) throw new Error('Your session expired. Sign in again.');
+  const token = await requireAccessToken();
   const headers = new Headers(options.headers || {});
   headers.set('Authorization', `Bearer ${token}`);
   const response = await fetch(`${String(C.STREAM_URL).replace(/\/$/,'')}${path}`, { ...options, headers });
@@ -300,10 +313,7 @@ async function workerRequest(path, options = {}) {
 async function workerUploadRequest(path, file, onProgress) {
   if (!C.STREAM_URL) throw new Error('STREAM_URL is not configured in config.js.');
   if (!sb) throw new Error('Supabase client is not initialized.');
-  const { data, error } = await sb.auth.getSession();
-  if (error) throw error;
-  const token = data.session?.access_token;
-  if (!token) throw new Error('Your session expired. Sign in again.');
+  const token = await requireAccessToken();
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${String(C.STREAM_URL).replace(/\/$/,'')}${path}`);
@@ -1570,7 +1580,8 @@ document.addEventListener('keydown', (e) => {
 /* ---------- accounts ---------- */
 let mode = 'signin';
 const authEl = $('auth');
-const friendly = (m = '') => /invalid login/i.test(m) ? 'Email or password is incorrect.' : /not confirmed/i.test(m) ? 'Confirm your email first — check your inbox for the link.'
+const friendly = (m = '') => /auth session missing|session missing/i.test(m) ? 'Your saved sign-in session is no longer available. Please sign in again. Your music catalogue and local preferences are not deleted.'
+  : /invalid login/i.test(m) ? 'Email or password is incorrect.' : /not confirmed/i.test(m) ? 'Confirm your email first — check your inbox for the link.'
   : /already registered|already been registered/i.test(m) ? 'An account with this email already exists. Try signing in.' : /rate limit|too many/i.test(m) ? 'Too many attempts. Wait a minute and try again.'
   : /password/i.test(m) ? m : /fetch|network/i.test(m) ? 'Network problem. Check your connection and try again.' : m || 'Something went wrong. Try again.';
 function setMode(m) {
@@ -1618,6 +1629,14 @@ $('authForm').addEventListener('submit', async (e) => {
   if (res.error) { msg(friendly(res.error.message), 'err'); return; }
   if (mode === 'reset') { msg('Check your inbox for the reset link.', 'ok'); return; }
   if (mode === 'signup' && !res.data?.session) { msg('Account created. Confirm your email, then sign in.', 'ok'); return; }
+  let signedInSession = res.data?.session || null;
+  if (!signedInSession) {
+    try { signedInSession = (await sb.auth.getSession()).data?.session || null; }
+    catch (sessionError) { console.warn('SONORA sign-in session read:', sessionError?.message || sessionError); }
+  }
+  if (!signedInSession?.user) { msg('The sign-in request completed, but this browser could not restore the session. Please try signing in once more.', 'err'); return; }
+  try { await handleAuthSession('SIGNED_IN', signedInSession); }
+  catch (sessionError) { console.error('SONORA post-sign-in setup:', sessionError); }
   hideAuth(); notify(mode === 'signup' ? 'Welcome to SONORA.' : 'Signed in.');
 });
 function refreshAccount() {
@@ -1666,28 +1685,30 @@ async function clearSignedOutPresence() {
   if (['admin', 'diagnostics'].includes(route().name)) renderLivePresence();
 }
 async function signOutUser(button) {
-  if (!sb || !user || signOutInProgress) return;
+  if (!sb || signOutInProgress) return;
+  if (!user) { showAuth('signin'); notify('You are already signed out on this device.'); return; }
   signOutInProgress = true;
   const originalHtml = button?.innerHTML;
   if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = 'Signing out…'; }
   try {
-    await clearSignedOutPresence();
-    // A regular Sign out action should end this browser session only, not every device.
-    const result = await sb.auth.signOut({ scope: 'local' });
-    let currentSession = null, sessionCheckSucceeded = false;
-    try {
-      const check = await sb.auth.getSession();
-      currentSession = check.data?.session || null;
-      sessionCheckSucceeded = !check.error;
-    } catch (checkError) {
-      console.warn('SONORA post-sign-out session check:', checkError?.message || checkError);
+    // Check storage first. A stale in-memory user can outlive a removed/expired local session.
+    const before = await sb.auth.getSession();
+    if (before.error) throw before.error;
+    if (!before.data?.session) {
+      await handleAuthSession('SIGNED_OUT', null);
+      closeDlg();
+      notify('Your previous sign-in session had already expired on this device. Please sign in again.');
+      return;
     }
-    // Supabase may return a best-effort remote revocation error after it has already
-    // removed the local session. Treat that as signed out locally only if confirmed.
-    if (currentSession) throw result?.error || new Error('The browser session is still active. Please try signing out again.');
-    if (result?.error && !sessionCheckSucceeded) throw result.error;
+    await clearSignedOutPresence();
+    const result = await sb.auth.signOut({ scope: 'local' });
+    const after = await sb.auth.getSession();
+    if (after.error) throw after.error;
+    if (after.data?.session) throw result?.error || new Error('This browser still has an active sign-in session. Please try again.');
+    // A missing-session error after local storage is confirmed empty is not a logout failure.
+    await handleAuthSession('SIGNED_OUT', null);
     closeDlg();
-    notify(result?.error ? 'Signed out on this device. Remote token revocation could not be confirmed.' : 'Signed out on this device.');
+    notify(result?.error ? 'Signed out on this device. The local session is cleared.' : 'Signed out on this device.');
   } catch (error) {
     let stillSignedIn = false;
     try { stillSignedIn = Boolean((await sb.auth.getSession()).data?.session); } catch { /* retain conservative state */ }
@@ -1699,6 +1720,7 @@ async function signOutUser(button) {
     notify(`Could not sign out: ${friendly(error?.message || String(error))}`);
   } finally {
     signOutInProgress = false;
+    if (button && !user) { button.disabled = false; button.removeAttribute('aria-busy'); }
   }
 }
 $('acctBtn').addEventListener('click', () => {
@@ -1774,16 +1796,20 @@ async function init() {
   render(); refreshAccount();
   if (!cloud) { if (!store.get('sonora-guest', false)) showAuth('signin'); return; }
   sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:'pkce' } });
-  sb.auth.onAuthStateChange((event, session) => {
-    setTimeout(() => { handleAuthSession(event, session).catch((error) => console.error('SONORA auth state:', error)); }, 0);
-  });
   let session = null;
   try {
+    // Let the auth client finish restoring storage (and any refresh) before adding
+    // listeners or making other Supabase calls. This avoids an initialization race.
     const { data, error } = await sb.auth.getSession();
     if (error) throw error;
-    session = data.session;
-  } catch (error) { console.error('SONORA session check:', error); }
+    session = data?.session || null;
+  } catch (error) { console.error('SONORA session restore:', error); }
   await handleAuthSession('INITIAL_SESSION', session);
+  // Subscribe only after the initial storage read has resolved. Never await Supabase
+  // calls directly in this callback; defer all state work outside the auth lock.
+  sb.auth.onAuthStateChange((event, nextSession) => {
+    window.setTimeout(() => { handleAuthSession(event, nextSession).catch((error) => console.error('SONORA auth state:', error)); }, 0);
+  });
   // Start presence only after Supabase has restored the current auth state/JWT.
   startLivePresence();
   if (!livePresenceHeartbeatTimer) livePresenceHeartbeatTimer = window.setInterval(() => { if (livePresenceReady) publishLivePresence(); }, 15000);

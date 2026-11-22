@@ -1,0 +1,22 @@
+SONORA 3.15 — AUTH SESSION RESTORE & SIGN-OUT FIX
+
+Findings
+- Previous build pinned Supabase JS 2.45.4, materially behind current v2 releases. Supabase changelog documents later auth initialization and sign-out fixes.
+- Previous startup subscribed to onAuthStateChange before awaiting getSession(), which can expose old auth initialization races.
+- Sign-out attempted local signOut even if the stored session had already disappeared while the in-memory `user` object remained populated; this can surface AuthSessionMissingError.
+- Worker request helpers duplicated session lookup and emitted generic expired-session errors without reconciling stale UI state.
+
+Changes
+1. Pin browser CDN/UMD SDK to Supabase JS 2.119.2 using the current documented jsDelivr package entrypoint (release published 19 Nov 2026).
+2. Restore the persisted session with getSession() before registering onAuthStateChange.
+3. Continue deferring event work with setTimeout so no other Supabase calls are awaited inside the auth callback.
+4. On successful password sign-in, reconcile the in-memory account state directly from the returned session instead of relying only on the listener callback.
+5. Add a shared access-token resolver for Worker requests/uploads; if storage has no session but the UI still thinks a user is signed in, reconcile the stale state and show a clear sign-in prompt.
+6. Before sign-out, check the actual stored session. If it is already missing, clear stale UI state and report that the session had already expired rather than surfacing “Auth session missing”.
+7. After local sign-out, confirm storage is empty and reconcile account/admin/preferences UI state.
+8. Translate raw “Auth session missing” messages into an actionable sign-in message.
+9. Bump frontend assets/cache marker to 3.15.0.
+
+Validation boundary
+- This is a frontend-only fix. No Worker, SQL, database schema, Supabase project configuration, API routes, or deployment settings were changed.
+- A live login against the hosted Supabase project could not be performed in this build environment. Please complete the browser checks listed in the assistant response after deployment.
