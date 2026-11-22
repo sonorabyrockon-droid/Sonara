@@ -44,11 +44,13 @@ let autoplayDraft = store.get('sonora-autoplay-next', true);
 let adminOverview = null, adminLoadError = '', adminCatalogQuery = '';
 let adminCatalogVisible = 5, adminAuditVisible = 5;
 let livePresenceChannel = null, livePresenceReady = false, livePresenceStatus = 'CONNECTING', liveListenerSnapshot = [], livePresenceAllSnapshot = [], liveTrackStartedAt = 0, liveTrackIdentity = '';
-let livePresenceLastSyncedAt = 0, livePresenceLastPublishedAt = 0, livePresenceLastError = '', livePresenceReconnectTimer = null, livePresenceEpoch = 0, livePresenceHeartbeatTimer = null;
+let livePresenceLastSyncedAt = 0, livePresenceLastPublishedAt = 0, livePresenceLastError = '', livePresenceLastPublishError = '', livePresenceReconnectTimer = null, livePresenceEpoch = 0, livePresenceHeartbeatTimer = null, livePresenceReconnectAttempt = 0;
+let liveAudienceFilter = 'all', liveAudienceQuery = '', liveAudienceVisible = 10;
+let livePresenceRawCount = 0, livePresenceStaleCount = 0, livePresenceLegacyCount = 0;
 let livePresenceSuppressed = false, signOutInProgress = false;
 const LIVE_PRESENCE_TOPIC = 'sonora-live-listeners';
-const LIVE_PRESENCE_VERSION = 3;
-const LIVE_PRESENCE_STALE_MS = 120000;
+const LIVE_PRESENCE_VERSION = 4;
+const LIVE_PRESENCE_STALE_MS = 90000;
 const liveSessionKey = `sonora-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 const liveSessionStartedAt = Date.now();
 let pendingPlaySeconds = 0, sessionPlayedSeconds = 0, currentPlayEventId = null, playEventCreating = false, playFinishRequested = false, lastPlaybackPosition = null, lastPlaybackTrackId = null, playFlushBusy = false;
@@ -356,49 +358,107 @@ function healthLine(label, check) {
 }
 
 function presenceTimestamp(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const numeric = Number(value);
-  if (Number.isFinite(numeric) && numeric > 0) return numeric;
-  const parsed = Date.parse(String(value || ''));
+  if (value == null || value === '') return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value > 0 && value < 100000000000 ? value * 1000 : value;
+  const raw = String(value).trim();
+  if (!raw) return 0;
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const numeric = Number(raw);
+    return numeric > 0 && numeric < 100000000000 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+function presenceIsGuest(listener) {
+  const kind = String(listener?.listener_type || listener?.account_type || '').trim().toLowerCase();
+  return listener?.is_guest === true || listener?.guest === true || /guest|anonymous/.test(kind);
+}
+function presenceTrackId(listener) {
+  return String(listener?.track_id || listener?.trackId || listener?.current_track_id || listener?.song_id || '').trim();
+}
+function presenceTrackTitle(listener) {
+  return String(listener?.title || listener?.track_title || listener?.current_title || listener?.song_title || '').trim();
+}
+function presenceIsPlaying(listener) {
+  const raw = listener?.is_listening ?? listener?.is_playing ?? listener?.playing ?? listener?.playback_state ?? listener?.status;
+  const state = typeof raw === 'string' ? raw.trim().toLowerCase() : raw;
+  const hasTrack = Boolean(presenceTrackId(listener) || presenceTrackTitle(listener));
+  if (state == null || state === '') return hasTrack; // compatibility with older payloads that only sent track metadata
+  const active = state === true || state === 1 || ['true','1','playing','listening','active','buffering'].includes(String(state));
+  return active && hasTrack;
+}
+function presenceSessionId(listener) {
+  return String(listener?.session_id || listener?.sessionId || listener?.session_key || listener?.client_session_id || listener?.phx_ref || '').trim();
+}
+function normalisePresenceMeta(meta, presenceKey) {
+  const nested = meta?.presence && typeof meta.presence === 'object' ? meta.presence : null;
+  const source = nested ? { ...meta, ...nested } : { ...meta };
+  const guest = presenceIsGuest(source);
+  const name = String(source.listener_name || source.display_name || source.user_name || source.username || source.name || '').trim();
+  const type = guest ? 'Guest' : (source.listener_type || source.account_type || (source.user_id || name ? 'Signed in' : 'Guest'));
+  const sessionId = String(source.session_id || source.sessionId || source.client_session_id || source.session_key || presenceKey || source.phx_ref || '').trim();
+  const trackId = presenceTrackId(source);
+  const title = presenceTrackTitle(source);
+  return {
+    ...source,
+    session_id: sessionId,
+    session_key: String(source.session_key || presenceKey || sessionId),
+    listener_name: name || (guest ? 'Guest' : 'Member'),
+    listener_type: type,
+    track_id: trackId || null,
+    title,
+    artist: String(source.artist || source.artist_name || source.track_artist || '').trim(),
+    album: String(source.album || source.album_name || '').trim(),
+    updated_at: source.updated_at ?? source.last_seen_at ?? source.last_heartbeat_at ?? source.heartbeat_at ?? null,
+    session_started_at: source.session_started_at || source.started_at || source.connected_at || null,
+    is_listening: presenceIsPlaying(source)
+  };
 }
 function readLivePresenceSnapshot() {
   if (!livePresenceChannel || !livePresenceReady) {
     livePresenceAllSnapshot = [];
     liveListenerSnapshot = [];
+    livePresenceRawCount = 0;
+    livePresenceStaleCount = 0;
+    livePresenceLegacyCount = 0;
     return;
   }
   try {
     const state = livePresenceChannel.presenceState() || {};
     const entries = Object.entries(state).flatMap(([key, value]) => {
       const metas = Array.isArray(value) ? value : (value && typeof value === 'object' ? [value] : []);
-      return metas.filter(meta => meta && typeof meta === 'object').map(meta => ({ ...meta, session_key: String(meta.session_id || key) }));
+      return metas.filter(meta => meta && typeof meta === 'object').map(meta => normalisePresenceMeta(meta, key));
     });
-    // A reconnect can briefly expose the same session under more than one presence ref.
-    // Keep the freshest copy so a listener is never counted twice.
+    livePresenceRawCount = entries.length;
     const unique = new Map();
     entries.forEach(meta => {
-      const key = String(meta.session_id || meta.session_key || meta.phx_ref || '');
+      const key = presenceSessionId(meta) || String(meta.session_key || meta.phx_ref || '');
       if (!key) return;
       const prior = unique.get(key);
-      if (!prior || presenceTimestamp(meta.updated_at) >= presenceTimestamp(prior.updated_at)) unique.set(key, meta);
+      const nextTime = presenceTimestamp(meta.updated_at);
+      const priorTime = presenceTimestamp(prior?.updated_at);
+      if (!prior || nextTime >= priorTime) unique.set(key, meta);
     });
     const now = Date.now();
-    livePresenceAllSnapshot = [...unique.values()].filter(meta => {
+    const all = [...unique.values()];
+    livePresenceLegacyCount = all.filter(meta => !presenceTimestamp(meta.updated_at)).length;
+    livePresenceStaleCount = all.filter(meta => {
       const updated = presenceTimestamp(meta.updated_at);
-      return !updated || now - updated <= LIVE_PRESENCE_STALE_MS;
+      return Boolean(updated && updated <= now + 300000 && now - updated > LIVE_PRESENCE_STALE_MS);
+    }).length;
+    livePresenceAllSnapshot = all.filter(meta => {
+      const updated = presenceTimestamp(meta.updated_at);
+      // Retain pre-heartbeat clients for compatibility; disclose them in diagnostics rather than silently hiding them.
+      return !updated || updated > now + 300000 || now - updated <= LIVE_PRESENCE_STALE_MS;
     });
-    liveListenerSnapshot = livePresenceAllSnapshot.filter(meta => {
-      const stateValue = meta.is_listening ?? meta.is_playing ?? meta.playing;
-      const listening = stateValue === true || String(stateValue).toLowerCase() === 'true' || stateValue == null;
-      return listening && Boolean(meta.title || meta.track_id);
-    }).map(meta => ({
+    liveListenerSnapshot = livePresenceAllSnapshot.filter(presenceIsPlaying).map(meta => ({
       ...meta,
-      track_id: meta.track_id || meta.trackId || `${meta.title || 'Unknown track'}|${meta.artist || 'Unknown artist'}`,
-      title: meta.title || meta.track_title || 'Unknown track',
-      artist: meta.artist || meta.artist_name || 'Unknown artist'
+      track_id: presenceTrackId(meta) || `${meta.title || 'Unknown track'}|${meta.artist || 'Unknown artist'}`,
+      title: meta.title || 'Unknown track',
+      artist: meta.artist || 'Unknown artist'
     }));
     livePresenceLastSyncedAt = now;
+    livePresenceLastError = '';
   } catch (error) {
     livePresenceLastError = error?.message || String(error);
     console.warn('SONORA live presence could not be read:', livePresenceLastError);
@@ -407,93 +467,135 @@ function readLivePresenceSnapshot() {
   }
 }
 function livePresenceDiagnosticText() {
-  if (!livePresenceReady) return `Realtime ${String(livePresenceStatus || 'WAITING').toLowerCase().replaceAll('_', ' ')}${livePresenceLastError ? ` · ${livePresenceLastError}` : ''}`;
+  if (!livePresenceReady) return `Realtime ${String(livePresenceStatus || 'WAITING').toLowerCase().replaceAll('_', ' ')} · channel ${LIVE_PRESENCE_TOPIC}${livePresenceLastError ? ` · ${livePresenceLastError}` : ''}`;
   const active = liveListenerSnapshot.length;
   const connected = livePresenceAllSnapshot.length;
   const synced = livePresenceLastSyncedAt ? new Date(livePresenceLastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'awaiting sync';
   const published = livePresenceLastPublishedAt ? new Date(livePresenceLastPublishedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'not published yet';
-  return `${active} active listener${active === 1 ? '' : 's'} · ${connected} connected session${connected === 1 ? '' : 's'} · last sync ${synced} · this browser published ${published}${livePresenceLastError ? ` · warning: ${livePresenceLastError}` : ''}`;
+  const selfVisible = livePresenceAllSnapshot.some(meta => presenceSessionId(meta) === liveSessionKey);
+  const otherSessions = livePresenceAllSnapshot.filter(meta => presenceSessionId(meta) !== liveSessionKey).length;
+  const visibility = selfVisible ? (otherSessions ? `${otherSessions} other browser session${otherSessions === 1 ? '' : 's'} visible` : 'only this browser is visible; waiting for other clients') : 'this browser has not appeared in the presence snapshot yet';
+  return `${active} playing · ${connected} connected · ${livePresenceRawCount} raw presence records · ${livePresenceStaleCount} stale ignored · ${livePresenceLegacyCount} legacy without heartbeat · ${visibility} · sync ${synced} · this device published ${published}${livePresenceLastError ? ` · read warning: ${livePresenceLastError}` : ''}${livePresenceLastPublishError ? ` · publish warning: ${livePresenceLastPublishError}` : ''}`;
 }
 function presenceDisplayName(listener, index = 0) {
-  const kind = String(listener.listener_type || 'Guest').toLowerCase();
-  if (kind === 'guest') return `Guest${index > 0 ? ` #${index + 1}` : ''}`;
-  const name = String(listener.listener_name || '').trim();
-  // Do not surface an email address in the public presence payload or admin list.
-  return name && !name.includes('@') ? name : 'Member';
-}
-function presenceIsPlaying(listener) {
-  const state = listener?.is_listening ?? listener?.is_playing ?? listener?.playing;
-  return (state === true || String(state).toLowerCase() === 'true') && Boolean(listener?.title || listener?.track_id);
-}
-function presenceSessionId(listener) {
-  return String(listener?.session_id || listener?.session_key || listener?.phx_ref || '');
+  if (presenceIsGuest(listener)) return `Guest${index > 0 ? ` #${index + 1}` : ''}`;
+  const name = String(listener.listener_name || listener.display_name || listener.user_name || listener.username || '').trim();
+  // Never expose email addresses, user IDs, or network identifiers in this public presence view.
+  return name && !name.includes('@') && name.length < 80 ? name : 'Member';
 }
 function connectedPresenceRows() {
   let guestIndex = 0;
   return livePresenceAllSnapshot.map(listener => {
-    const guest = String(listener.listener_type || 'Guest').toLowerCase() === 'guest';
+    const guest = presenceIsGuest(listener);
     const displayName = presenceDisplayName(listener, guest ? guestIndex++ : 0);
     const playing = presenceIsPlaying(listener);
-    const started = presenceTimestamp(listener.started_at || listener.session_started_at);
-    return { ...listener, display_name: displayName, is_active: playing, session_elapsed: started ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : null };
-  }).sort((a, b) => Number(b.is_active) - Number(a.is_active));
+    const started = presenceTimestamp(listener.session_started_at || listener.connected_at);
+    const trackStarted = presenceTimestamp(listener.started_at || listener.track_started_at);
+    return {
+      ...listener,
+      display_name: displayName,
+      display_type: guest ? 'Guest' : 'Signed in',
+      is_active: playing,
+      is_current_device: presenceSessionId(listener) === liveSessionKey,
+      session_elapsed: started ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : null,
+      track_elapsed: trackStarted ? Math.max(0, Math.floor((Date.now() - trackStarted) / 1000)) : null
+    };
+  }).sort((a, b) => Number(b.is_active) - Number(a.is_active) || (presenceTimestamp(a.session_started_at) || 0) - (presenceTimestamp(b.session_started_at) || 0));
+}
+function filteredLiveAudienceRows(rows) {
+  const query = liveAudienceQuery.trim().toLowerCase();
+  return rows.filter(listener => {
+    if (liveAudienceFilter === 'listening' && !listener.is_active) return false;
+    if (liveAudienceFilter === 'online' && listener.is_active) return false;
+    if (!query) return true;
+    return [listener.display_name, listener.display_type, listener.title, listener.artist, listener.album]
+      .some(value => String(value || '').toLowerCase().includes(query));
+  });
+}
+function renderConnectedAudienceList(target, rows, scope) {
+  if (!target) return;
+  if (!livePresenceReady) {
+    target.innerHTML = `<div class="chart-empty">Realtime is ${esc(String(livePresenceStatus).toLowerCase().replaceAll('_', ' '))}. ${esc(livePresenceLastError || 'Waiting for the shared presence channel.')}</div>`;
+    return;
+  }
+  const filtered = filteredLiveAudienceRows(rows);
+  if (!filtered.length) {
+    target.innerHTML = `<div class="chart-empty">${liveAudienceQuery ? 'No connected session matches this search.' : liveAudienceFilter === 'listening' ? 'Nobody is playing music right now.' : liveAudienceFilter === 'online' ? 'No idle connected sessions right now.' : 'No other connected sessions are visible yet. Open SONORA in another browser or device to test live presence.'}</div>`;
+    return;
+  }
+  const shown = filtered.slice(0, liveAudienceVisible);
+  target.innerHTML = shown.map(listener => {
+    const guest = presenceIsGuest(listener);
+    const trackText = listener.is_active
+      ? `${listener.title || 'Unknown track'} — ${listener.artist || 'Unknown artist'}${listener.track_elapsed != null ? ` · ${readableListenTime(listener.track_elapsed)} on track` : ''}`
+      : `Online · not playing${listener.session_elapsed != null ? ` · connected ${readableListenTime(listener.session_elapsed)}` : ''}`;
+    const updated = presenceTimestamp(listener.updated_at);
+    const lastSeen = updated ? (Date.now() - updated < 45000 ? 'Seen just now' : `Seen ${Math.max(1, Math.floor((Date.now() - updated) / 60000))} min ago`) : 'Heartbeat unavailable (older app version)';
+    const identityLine = `${listener.display_type}${listener.is_current_device ? ' · This device' : ''}${guest ? ' · IP not collected' : ''} · ${lastSeen}`;
+    return `<article class="intel-user-row audience-user-enhanced"><span class="intel-avatar">${esc(listener.display_name.slice(0, 1).toUpperCase())}</span><span class="intel-user-main"><strong>${esc(listener.display_name)}${listener.is_current_device ? ' <small class=\"audience-self-tag\">YOU</small>' : ''}</strong><small>${esc(identityLine)} · ${esc(trackText)}</small></span><span class="intel-user-duration"><b>${listener.is_active ? readableListenTime(listener.track_elapsed || 0) : 'Online'}</b><small>${listener.is_active ? 'ON TRACK' : 'CONNECTED'}</small></span><span class="audience-status-tag ${listener.is_active ? 'is-playing' : 'is-online'}">${listener.is_active ? 'LISTENING' : 'ONLINE'}</span></article>`;
+  }).join('');
+  if (filtered.length > shown.length) {
+    target.insertAdjacentHTML('beforeend', `<div class="live-audience-footer"><span>Showing ${shown.length} of ${filtered.length} matching sessions</span><button class="btn btn-glass btn-small" type="button" data-act="audience-more">Show more · ${Math.min(10, filtered.length - shown.length)}</button></div>`);
+  } else if (liveAudienceVisible > 10) {
+    target.insertAdjacentHTML('beforeend', `<div class="live-audience-footer"><span>All ${filtered.length} matching sessions shown</span><button class="btn btn-glass btn-small" type="button" data-act="audience-less">Show less</button></div>`);
+  } else if (filtered.length > 10) {
+    target.insertAdjacentHTML('beforeend', `<div class="live-audience-footer"><span>Showing ${shown.length} of ${filtered.length} matching sessions</span><button class="btn btn-glass btn-small" type="button" data-act="audience-more">Show more</button></div>`);
+  }
 }
 function renderLivePresence() {
   readLivePresenceSnapshot();
   const status = $('adminLiveStatus'), metric = $('adminLiveMetric'), note = $('adminLiveMetricNote'), target = $('adminLiveTracks'), peopleTarget = $('adminLiveUsers');
+  const connectedRows = connectedPresenceRows();
+  const activeCount = livePresenceReady ? liveListenerSnapshot.length : null;
+  const connectedCount = livePresenceReady ? connectedRows.length : null;
+  const guestCount = livePresenceReady ? connectedRows.filter(presenceIsGuest).length : null;
+  const memberCount = livePresenceReady ? Math.max(0, connectedRows.length - guestCount) : null;
   if (status) {
     const online = livePresenceReady;
     status.textContent = online ? 'LIVE' : (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(livePresenceStatus) ? 'OFFLINE' : livePresenceStatus === 'CONNECTING' ? 'CONNECTING' : 'WAITING');
     status.className = `storage-pill ${online ? 'live-pill' : ''}`;
   }
-  const count = livePresenceReady ? liveListenerSnapshot.length : null;
-  if (metric) metric.textContent = count == null ? '—' : count.toLocaleString();
-  if (note) note.textContent = count == null ? `Realtime ${String(livePresenceStatus).toLowerCase().replaceAll('_', ' ')}` : `${count} active listening ${count === 1 ? 'session' : 'sessions'}`;
+  if (metric) metric.textContent = activeCount == null ? '—' : activeCount.toLocaleString();
+  if (note) note.textContent = activeCount == null ? `Realtime ${String(livePresenceStatus).toLowerCase().replaceAll('_', ' ')}` : `${activeCount} currently playing · ${connectedCount} connected sessions`;
+  [['adminLiveConnectedMetric', connectedCount], ['adminLiveMembersMetric', memberCount], ['adminLiveGuestsMetric', guestCount], ['intelLiveConnectedMetric', connectedCount], ['intelLiveMembersMetric', memberCount], ['intelLiveGuestsMetric', guestCount]].forEach(([id, value]) => { const node = $(id); if (node) node.textContent = value == null ? '—' : value.toLocaleString(); });
   const diagnostic = $('adminLiveDiagnostics');
   if (diagnostic) diagnostic.textContent = livePresenceDiagnosticText();
   const insightDiagnostic = $('intelLiveDiagnostics');
   if (insightDiagnostic) insightDiagnostic.textContent = livePresenceDiagnosticText();
-  const insightStatus = $('insightLiveStatus'), insightCount = $('insightListenerCount'), insightUsers = $('insightLiveUsers');
+  const insightStatus = $('insightLiveStatus'), insightCount = $('insightListenerCount');
   if (insightStatus) { insightStatus.textContent = livePresenceReady ? 'LIVE' : livePresenceStatus; insightStatus.className = `storage-pill ${livePresenceReady ? 'live-pill' : ''}`; }
-  if (insightCount) insightCount.textContent = count == null ? '—' : count.toLocaleString();
-  const connectedRows = connectedPresenceRows();
-  const renderConnectedUser = (listener) => {
-    const isGuest = String(listener.listener_type || 'Guest').toLowerCase() === 'guest';
-    const description = listener.is_active
-      ? `${esc(listener.title || 'Unknown track')} — ${esc(listener.artist || 'Unknown artist')}${listener.started_at ? ` · ${Math.max(0, Math.floor((Date.now() - presenceTimestamp(listener.started_at)) / 60000))} min on track` : ''}`
-      : 'Online · not playing right now';
-    return `<div class="audience-user-row"><span class="audience-avatar">${esc(listener.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${esc(listener.display_name)}</strong><small>${esc(listener.listener_type || (isGuest ? 'Guest' : 'Signed in'))} · ${description}</small></span><b class="presence-state-pill ${listener.is_active ? 'is-playing' : 'is-online'}">${listener.is_active ? 'LISTENING' : 'ONLINE'}</b></div>`;
-  };
-  if (insightUsers) {
-    if (count == null) insightUsers.innerHTML = `<div class="chart-empty">Live presence is ${esc(livePresenceStatus.toLowerCase())}. ${esc(livePresenceLastError || 'Waiting for the Realtime subscription.')}</div>`;
-    else if (!connectedRows.length) insightUsers.innerHTML = '<div class="chart-empty">No connected listening sessions right now. Signed-in members and guests will appear here while SONORA is open.</div>';
-    else insightUsers.innerHTML = connectedRows.slice(0, 40).map(renderConnectedUser).join('');
-  }
-  if (peopleTarget) {
-    if (count == null) peopleTarget.innerHTML = `<div class="chart-empty">Realtime is ${esc(String(livePresenceStatus).toLowerCase().replaceAll('_', ' '))}. ${esc(livePresenceLastError || 'Waiting for the presence subscription.')}</div>`;
-    else if (!connectedRows.length) peopleTarget.innerHTML = '<div class="chart-empty">No connected users yet. Other browsers appear here once they open SONORA.</div>';
-    else peopleTarget.innerHTML = connectedRows.slice(0, 40).map(renderConnectedUser).join('');
-  }
-  renderIntelligenceLiveBlocks();
-  if (!target) return;
-  if (count == null) { target.innerHTML = `<div class="chart-empty"><strong>Live presence: ${esc(livePresenceStatus)}</strong><br>${esc(livePresenceLastError || 'Realtime has not subscribed. Check the connection diagnostics.')}</div>`; return; }
+  if (insightCount) insightCount.textContent = activeCount == null ? '—' : activeCount.toLocaleString();
+  renderConnectedAudienceList(peopleTarget, connectedRows, 'admin');
+  renderConnectedAudienceList($('insightLiveUsers'), connectedRows, 'intel');
+  // Keep search and filter controls synchronised on both Admin surfaces.
+  ['adminLiveAudienceSearch', 'intelLiveAudienceSearch'].forEach(id => { const input = $(id); if (input && input.value !== liveAudienceQuery) input.value = liveAudienceQuery; });
+  ['admin','intel'].forEach(scope => qsa(`[data-act="audience-filter"][data-scope="${scope}"]`).forEach(button => {
+    const selected = button.dataset.filter === liveAudienceFilter;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }));
+  if (!target) { renderIntelligenceLiveBlocks(); return; }
+  if (activeCount == null) { target.innerHTML = `<div class="chart-empty"><strong>Live presence: ${esc(livePresenceStatus)}</strong><br>${esc(livePresenceLastError || 'Realtime has not subscribed. Check the presence diagnostics.')}</div>`; renderIntelligenceLiveBlocks(); return; }
   if (!liveListenerSnapshot.length) {
     target.innerHTML = livePresenceAllSnapshot.length
-      ? `<div class="live-empty"><span class="live-empty-pulse"></span><div><strong>${livePresenceAllSnapshot.length} sessions connected · no active playback</strong><small>Connected browsers will appear as listeners when audio is actively playing.</small></div></div>`
-      : '<div class="live-empty"><span class="live-empty-pulse"></span><div><strong>No active listeners right now</strong><small>Tracks appear here while a listener is actively playing music.</small></div></div>';
+      ? `<div class="live-empty"><span class="live-empty-pulse"></span><div><strong>${livePresenceAllSnapshot.length} sessions connected · no active playback</strong><small>The connected audience list includes idle members and guests. Now Playing only shows active audio.</small></div></div>`
+      : '<div class="live-empty"><span class="live-empty-pulse"></span><div><strong>No active listeners right now</strong><small>Current tracks appear here while a browser is actively playing music.</small></div></div>';
+    renderIntelligenceLiveBlocks();
     return;
   }
   const grouped = new Map();
   liveListenerSnapshot.forEach(listener => {
     const id = String(listener.track_id || `${listener.title}|${listener.artist}`);
-    if (!grouped.has(id)) grouped.set(id, { id, title: listener.title, artist: listener.artist || 'Unknown artist', album: listener.album || '', cover_url: safeUrl(listener.cover_url || ''), count: 0 });
+    if (!grouped.has(id)) grouped.set(id, { id, title: listener.title || 'Unknown track', artist: listener.artist || 'Unknown artist', album: listener.album || '', cover_url: safeUrl(listener.cover_url || ''), count: 0 });
     grouped.get(id).count++;
   });
   const songs = [...grouped.values()].sort((a, b) => b.count - a.count);
   target.innerHTML = songs.map(song => `<article class="live-track-row"><span class="live-track-art">${song.cover_url ? `<img src="${esc(song.cover_url)}" alt="" loading="lazy">` : '♫'}</span><span class="live-track-copy"><strong>${esc(song.title)}</strong><small>${esc(song.artist)}${song.album ? ` · ${esc(song.album)}` : ''}</small></span><span class="live-track-count"><b>${song.count}</b><small>${song.count === 1 ? 'listener' : 'listeners'}</small></span></article>`).join('');
+  renderIntelligenceLiveBlocks();
 }
 function scheduleLivePresenceReconnect(channel, epoch) {
   if (livePresenceReconnectTimer) return;
+  const delay = Math.min(30000, 1500 * (2 ** Math.min(livePresenceReconnectAttempt++, 5)));
   livePresenceReconnectTimer = window.setTimeout(async () => {
     livePresenceReconnectTimer = null;
     if (channel !== livePresenceChannel || epoch !== livePresenceEpoch || livePresenceReady || !sb) return;
@@ -501,7 +603,7 @@ function scheduleLivePresenceReconnect(channel, epoch) {
     livePresenceEpoch++;
     try { await sb.removeChannel(channel); } catch (error) { console.warn('SONORA presence channel cleanup:', error?.message || error); }
     startLivePresence();
-  }, 8000);
+  }, delay);
 }
 function currentListenerName() {
   const metadata = user?.user_metadata || {};
@@ -516,7 +618,9 @@ async function publishLivePresence() {
   if (!playing) { liveTrackIdentity = ''; liveTrackStartedAt = 0; }
   const payload = {
     presence_version: LIVE_PRESENCE_VERSION,
-    app_version: '3.16.0',
+    app_version: '3.17.0',
+    last_seen_at: Date.now(),
+    playback_state: playing ? 'playing' : 'idle',
     session_id: liveSessionKey,
     session_started_at: liveSessionStartedAt,
     listener_name: currentListenerName(),
@@ -535,10 +639,10 @@ async function publishLivePresence() {
     const resultStatus = typeof result === 'string' ? result : result?.status;
     if (resultStatus && resultStatus !== 'ok') throw new Error(`Presence track returned ${resultStatus}`);
     livePresenceLastPublishedAt = Date.now();
-    livePresenceLastError = '';
+    livePresenceLastPublishError = '';
   } catch (error) {
-    livePresenceLastError = error?.message || String(error);
-    console.warn('SONORA live presence update failed:', livePresenceLastError);
+    livePresenceLastPublishError = error?.message || String(error);
+    console.warn('SONORA live presence update failed:', livePresenceLastPublishError);
   }
 }
 function startLivePresence() {
@@ -562,14 +666,16 @@ function startLivePresence() {
       livePresenceStatus = status;
       livePresenceReady = status === 'SUBSCRIBED';
       if (livePresenceReady) {
+        livePresenceReconnectAttempt = 0;
         if (livePresenceReconnectTimer) { clearTimeout(livePresenceReconnectTimer); livePresenceReconnectTimer = null; }
         livePresenceLastError = '';
+        livePresenceLastPublishError = '';
         await publishLivePresence();
         readLivePresenceSnapshot();
       } else {
         liveListenerSnapshot = [];
         livePresenceAllSnapshot = [];
-        if (['CHANNEL_ERROR', 'TIMED_OUT'].includes(status)) {
+        if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
           livePresenceLastError = `Realtime channel ${status.toLowerCase().replaceAll('_', ' ')}`;
           scheduleLivePresenceReconnect(channel, epoch);
         }
@@ -1162,7 +1268,7 @@ const views = {
       <div class="admin-heading"><div><div class="kicker">SONORA CONTROL ROOM</div><h1>Admin dashboard</h1><p class="lede">Upload and manage music, monitor Supabase and Cloudflare service health, and inspect administrative activity.</p></div><div class="admin-heading-actions"><a class="btn btn-glass" href="#/diagnostics">${ic('activity')}Music & Audience Intelligence</a><button class="btn btn-glass" type="button" data-act="admin-refresh">${ic('activity')}Refresh status</button></div></div>
       <div class="admin-welcome glass"><div><strong>Administrator verified</strong><span>${esc(user?.email || '')}</span></div><span class="admin-status" id="adminStatus">Loading service health…</span></div>
       <div class="r2-storage-estimate glass" id="adminStorageEstimate"><b>Cloudflare R2 storage estimate</b><span>Loading bucket usage…</span></div>
-      <section class="admin-section glass live-listening-section"><div class="section-top"><div><h2>Live audience across SONORA</h2><p>Connected browsers appear in the people list; active playback is shown separately in Now Playing.</p><div class="live-listener-kpi"><strong id="adminLiveMetric">—</strong><span id="adminLiveMetricNote">Waiting for Realtime presence</span></div></div><span class="storage-pill" id="adminLiveStatus">CONNECTING</span></div><small class="live-presence-diagnostic" id="adminLiveDiagnostics">Waiting for Realtime diagnostics…</small><div class="admin-live-grid"><div class="admin-live-column"><div class="admin-live-subhead"><strong>Now Playing</strong><small>Tracks with active playback</small></div><div class="admin-live-tracks" id="adminLiveTracks"><div class="chart-empty">Connecting to live listening presence…</div></div></div><div class="admin-live-column"><div class="admin-live-subhead"><strong>Connected users</strong><small>Signed-in members and guests · listening or idle</small></div><div class="admin-live-users" id="adminLiveUsers"><div class="chart-empty">Waiting for connected sessions…</div></div></div></div></section>
+      <section class="admin-section glass live-listening-section"><div class="section-top"><div><h2>Live audience across SONORA</h2><p>Live connected browser sessions and active audio are measured separately. Counts represent browser sessions, not unique people.</p><div class="live-listener-kpi"><strong id="adminLiveMetric">—</strong><span id="adminLiveMetricNote">Waiting for Realtime presence</span></div></div><span class="storage-pill" id="adminLiveStatus">CONNECTING</span></div><div class="live-audience-summary"><div><strong id="adminLiveConnectedMetric">—</strong><span>Connected sessions</span></div><div><strong id="adminLiveMembersMetric">—</strong><span>Signed-in members</span></div><div><strong id="adminLiveGuestsMetric">—</strong><span>Guest sessions</span></div></div><small class="live-presence-diagnostic" id="adminLiveDiagnostics">Waiting for Realtime diagnostics…</small><div class="admin-live-grid"><div class="admin-live-column"><div class="admin-live-subhead"><strong>Now Playing</strong><small>Tracks with active playback</small></div><div class="admin-live-tracks" id="adminLiveTracks"><div class="chart-empty">Connecting to live listening presence…</div></div></div><div class="admin-live-column"><div class="admin-live-subhead"><strong>Connected users</strong><small>All sessions · members and guests</small></div><div class="live-audience-tools"><input class="input live-audience-search" id="adminLiveAudienceSearch" type="search" value="${esc(liveAudienceQuery)}" placeholder="Find a member, guest or track…" aria-label="Search connected users"><div class="live-audience-filters" role="group" aria-label="Filter connected users"><button type="button" class="selected" data-act="audience-filter" data-scope="admin" data-filter="all" aria-pressed="true">All</button><button type="button" data-act="audience-filter" data-scope="admin" data-filter="listening" aria-pressed="false">Listening</button><button type="button" data-act="audience-filter" data-scope="admin" data-filter="online" aria-pressed="false">Online</button></div></div><div class="admin-live-users" id="adminLiveUsers"><div class="chart-empty">Waiting for connected sessions…</div></div></div></div></section>
       <section class="admin-section glass analytics-section"><div class="section-top"><div><h2>Platform intelligence</h2><p>Catalogue mix, weekly upload momentum, listener engagement, storage and service response times.</p></div><span class="storage-pill">LIVE SNAPSHOT</span></div><div class="admin-analytics-grid" id="adminAnalytics"><div class="chart-card glass">Loading analytics…</div></div><div class="admin-insights" id="adminInsights"></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Service health & performance</h2><p>Live probes for authentication, database access, Cloudflare Worker and private R2 storage.</p></div></div><div class="admin-health" id="adminHealth"><p class="muted">Checking services…</p></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Deep diagnostics</h2><p>Read-only checks against the core Supabase tables and a sample R2 object. Refresh to re-run.</p></div></div><div class="admin-deep-grid" id="adminDeepDiagnostics"><p class="muted">Waiting for diagnostic results…</p></div><p class="muted health-note" id="adminCloudflareLimits"></p></section>
@@ -1346,8 +1452,9 @@ audio.addEventListener('loadedmetadata', () => { $('dur').textContent = fmt(audi
 audio.addEventListener('play', syncPlaying); audio.addEventListener('pause', syncPlaying);
 audio.addEventListener('playing', () => { syncPlaying(); publishLivePresence(); });
 audio.addEventListener('ended', () => publishLivePresence());
-window.addEventListener('focus', () => { if (livePresenceReady) publishLivePresence(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && livePresenceReady) publishLivePresence(); });
+window.addEventListener('focus', () => { if (livePresenceReady) { publishLivePresence(); readLivePresenceSnapshot(); if (['admin','diagnostics'].includes(route().name)) renderLivePresence(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && livePresenceReady) { publishLivePresence(); readLivePresenceSnapshot(); if (['admin','diagnostics'].includes(route().name)) renderLivePresence(); } });
+window.addEventListener('online', () => { if (sb && !livePresenceReady && livePresenceChannel) scheduleLivePresenceReconnect(livePresenceChannel, livePresenceEpoch); });
 audio.addEventListener('waiting', () => $('play').classList.add('loading'));
 ['playing', 'canplay', 'pause', 'error'].forEach((e) => audio.addEventListener(e, () => $('play').classList.remove('loading')));
 audio.addEventListener('ended', () => { if (userPreferences.autoplay_next !== false) step(1, true); });
@@ -1443,43 +1550,27 @@ function readableListenTime(seconds) {
 }
 function liveListenerLabel(listener,index) { return presenceDisplayName(listener,index); }
 function renderIntelligenceLiveBlocks() {
-  const countNode=$('insightListenerCount'),statusNode=$('insightLiveStatus'),usersNode=$('insightLiveUsers');
+  const countNode=$('insightListenerCount'),statusNode=$('insightLiveStatus');
   const headerLiveBadge=$('intelHeaderLiveBadge');
   const count=livePresenceReady?liveListenerSnapshot.length:null;
+  const connected=livePresenceReady?livePresenceAllSnapshot:[];
+  const activeUsers=connected.filter(presenceIsPlaying);
+  const connectedGuests=connected.filter(presenceIsGuest).length;
+  const connectedMembers=Math.max(0,connected.length-connectedGuests);
   if(headerLiveBadge){headerLiveBadge.textContent=livePresenceReady?'LIVE AUDIENCE':`AUDIENCE ${String(livePresenceStatus||'WAITING').replaceAll('_',' ')}`;headerLiveBadge.classList.toggle('offline',!livePresenceReady);}
   if(countNode)countNode.textContent=count==null?'—':count.toLocaleString();
   if(statusNode){statusNode.textContent=livePresenceReady?'LIVE':livePresenceStatus;statusNode.className=`storage-pill ${livePresenceReady?'live-pill':''}`;}
-
-  let guestIndex=0;
-  const connected=livePresenceAllSnapshot.map(listener=>{
-    const guest=String(listener.listener_type||'Guest').toLowerCase()==='guest';
-    const started=presenceTimestamp(listener.started_at || listener.session_started_at);
-    const elapsed=started?Math.max(0,Math.floor((Date.now()-started)/1000)):0;
-    const display_name=liveListenerLabel(listener,guest?guestIndex++:0);
-    const is_active=presenceIsPlaying(listener) && liveListenerSnapshot.some(active=>presenceSessionId(active)===presenceSessionId(listener));
-    return {...listener,display_name,elapsed,is_active};
-  }).sort((a,b)=>Number(b.is_active)-Number(a.is_active));
-  const activeUsers=connected.filter(x=>x.is_active);
-  if(usersNode){
-    if(!livePresenceReady) usersNode.innerHTML=`<div class="intel-empty-state"><strong>Live presence is ${esc(livePresenceStatus.toLowerCase())}</strong><span>Connected users will appear after the Realtime subscription completes.</span></div>`;
-    else if(!connected.length) usersNode.innerHTML='<div class="intel-empty-state"><strong>No connected users right now</strong><span>Signed-in members and guests appear here while SONORA is open in their browser.</span></div>';
-    else usersNode.innerHTML=connected.slice(0,40).map(listener=>{
-      const guest=String(listener.listener_type||'Guest').toLowerCase()==='guest';
-      const detail=listener.is_active?`${esc(listener.title||'Unknown track')} — ${esc(listener.artist||'Unknown artist')}`:'Online · not playing right now';
-      const status=listener.is_active?'LISTENING':'ONLINE';
-      return `<article class="intel-user-row"><span class="intel-avatar">${esc(listener.display_name.slice(0,1).toUpperCase())}</span><span class="intel-user-main"><strong>${esc(listener.display_name)}</strong><small>${esc(listener.listener_type||(guest?'Guest':'Signed in'))} · ${detail}${guest?' · IP not exposed':''}</small></span><span class="intel-user-duration"><b>${listener.is_active?readableListenTime(listener.elapsed):'Online'}</b><small>${listener.is_active?'SESSION':'CONNECTED'}</small></span><i class="intel-playing-dot ${listener.is_active?'is-playing':'is-online'}" aria-label="${status}"></i></article>`;
-    }).join('');
-  }
-  const signed=activeUsers.filter(x=>String(x.listener_type||'').toLowerCase()!=='guest').length;
-  const guests=activeUsers.length-signed;
+  [['intelLiveConnectedMetric',livePresenceReady?connected.length:null],['intelLiveMembersMetric',livePresenceReady?connectedMembers:null],['intelLiveGuestsMetric',livePresenceReady?connectedGuests:null]].forEach(([id,value])=>{const node=$(id);if(node)node.textContent=value==null?'—':value.toLocaleString();});
+  const signed=connectedMembers;
+  const guests=connectedGuests;
   const audienceMix=$('intelAudienceMix');
-  if(audienceMix) audienceMix.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for Realtime presence.</div>':!activeUsers.length?'<div class="chart-empty">No active listeners to segment yet.</div>':svgDonutChart([{name:'Signed in',value:signed},{name:'Guests',value:guests}],'name','value','users');
+  if(audienceMix) audienceMix.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for Realtime presence.</div>':!connected.length?'<div class="chart-empty">No connected audience sessions yet.</div>':svgDonutChart([{name:'Signed in',value:signed},{name:'Guests',value:guests}],'name','value','sessions');
   const bands=[{name:'0–5 min',value:0},{name:'5–15 min',value:0},{name:'15–30 min',value:0},{name:'30+ min',value:0}];
-  activeUsers.forEach(x=>{const mins=x.elapsed/60;const index=mins<5?0:mins<15?1:mins<30?2:3;bands[index].value++;});
+  activeUsers.forEach(x=>{const start=presenceTimestamp(x.started_at || x.track_started_at);const mins=start?Math.max(0,(Date.now()-start)/60000):0;const index=mins<5?0:mins<15?1:mins<30?2:3;bands[index].value++;});
   const sessionBands=$('intelSessionBands');
   if(sessionBands)sessionBands.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for live sessions.</div>':activeUsers.length?svgBarChart(bands,'name','value','chart-bar-engagement'):'<div class="chart-empty">No current listening sessions to analyse.</div>';
   const grouped=new Map();
-  activeUsers.forEach(listener=>{const id=String(listener.track_id||`${listener.title}|${listener.artist}`);if(!grouped.has(id))grouped.set(id,{name:listener.title||'Unknown track',artist:listener.artist||'Unknown artist',value:0});grouped.get(id).value++;});
+  activeUsers.forEach(listener=>{const id=String(presenceTrackId(listener)||`${listener.title}|${listener.artist}`);if(!grouped.has(id))grouped.set(id,{name:listener.title||'Unknown track',artist:listener.artist||'Unknown artist',value:0});grouped.get(id).value++;});
   const liveTracks=[...grouped.values()].sort((a,b)=>b.value-a.value);
   const tracksNode=$('intelLiveTrackChart');
   if(tracksNode)tracksNode.innerHTML=!livePresenceReady?'<div class="chart-empty">Live track data is unavailable until presence connects.</div>':liveTracks.length?svgBarChart(liveTracks.slice(0,7).map(x=>({name:`${x.name} · ${x.artist}`,value:x.value})),'name','value','chart-bar-engagement'):'<div class="chart-empty">Nothing is playing right now.</div>';
@@ -1529,11 +1620,13 @@ function renderIntelligenceDashboard(data) {
     <section class="intel-live-grid">
       <article class="intel-panel intel-live-panel">
         <div class="intel-panel-head"><div><span class="intel-eyebrow">REALTIME AUDIENCE</span><h2>Live listening room</h2><p>Active playback across connected browsers. Listener browsers must use the current frontend build.</p></div><span id="insightLiveStatus" class="storage-pill">CONNECTING</span></div>
-        <div class="intel-live-main"><div class="intel-live-count"><strong id="insightListenerCount">—</strong><span>active listeners</span><small id="intelLiveUpdated">Waiting for live presence</small><small class="live-presence-diagnostic" id="intelLiveDiagnostics">Waiting for Realtime diagnostics…</small></div><div id="intelCurrentlyPlaying" class="intel-playing-list"><div class="chart-empty">Waiting for active tracks…</div></div></div>
-        <div class="intel-user-head"><strong>Connected users</strong><span>All connected sessions · Listening or Online status</span></div>
+        <div class="intel-live-main"><div class="intel-live-count"><strong id="insightListenerCount">—</strong><span>currently playing</span><small id="intelLiveUpdated">Waiting for live presence</small><small class="live-presence-diagnostic" id="intelLiveDiagnostics">Waiting for Realtime diagnostics…</small></div><div id="intelCurrentlyPlaying" class="intel-playing-list"><div class="chart-empty">Waiting for active tracks…</div></div></div>
+        <div class="live-audience-summary intel-audience-summary"><div><strong id="intelLiveConnectedMetric">—</strong><span>Connected</span></div><div><strong id="intelLiveMembersMetric">—</strong><span>Members</span></div><div><strong id="intelLiveGuestsMetric">—</strong><span>Guests</span></div></div>
+        <div class="intel-user-head"><strong>Connected users</strong><span>All browser sessions · listening or online</span></div>
+        <div class="live-audience-tools"><input class="input live-audience-search" id="intelLiveAudienceSearch" type="search" value="${esc(liveAudienceQuery)}" placeholder="Find a member, guest or track…" aria-label="Search connected users"><div class="live-audience-filters" role="group" aria-label="Filter connected users"><button type="button" class="selected" data-act="audience-filter" data-scope="intel" data-filter="all" aria-pressed="true">All</button><button type="button" data-act="audience-filter" data-scope="intel" data-filter="listening" aria-pressed="false">Listening</button><button type="button" data-act="audience-filter" data-scope="intel" data-filter="online" aria-pressed="false">Online</button></div></div>
         <div id="insightLiveUsers" class="intel-user-list"><div class="chart-empty">Waiting for live presence…</div></div>
       </article>
-      <article class="intel-panel intel-audience-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">AUDIENCE COMPOSITION</span><h2>Live audience mix</h2><p>Signed-in versus guest sessions currently playing.</p></div></div><div id="intelAudienceMix" class="intel-chart-visual"><div class="chart-empty">Waiting for live presence…</div></div><div class="intel-subchart"><h3>Time on current track</h3><div id="intelSessionBands"><div class="chart-empty">Waiting for sessions…</div></div></div></article>
+      <article class="intel-panel intel-audience-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">AUDIENCE COMPOSITION</span><h2>Live audience mix</h2><p>Connected signed-in members versus guest browser sessions.</p></div></div><div id="intelAudienceMix" class="intel-chart-visual"><div class="chart-empty">Waiting for live presence…</div></div><div class="intel-subchart"><h3>Time on current track</h3><div id="intelSessionBands"><div class="chart-empty">Waiting for sessions…</div></div></div></article>
     </section>
     <div class="intel-chart-grid">
       <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">MUSIC CATALOGUE</span><h2>Genre distribution</h2><p>How published and listed tracks are distributed by genre.</p></div></div>${svgDonutChart(genres.slice(0,7),'name','value','tracks')}${genres.length>7?`<details class="intel-more"><summary>Show ${genres.length-7} more genres</summary>${svgBarChart(genres.slice(7),'name','value','chart-bar-engagement')}</details>`:''}</article>
@@ -1548,7 +1641,9 @@ function renderIntelligenceDashboard(data) {
     <section class="intel-panel intel-catalogue-audit"><div class="intel-panel-head"><div><span class="intel-eyebrow">MUSIC INTEGRITY</span><h2>Duplicate & catalogue audit</h2><p>Automated metadata checks against the current returned catalogue.</p></div><span class="intel-audit-state ${duplicates?'has-warning':'is-clean'}">${duplicates?`${duplicates} possible duplicates`:'No metadata duplicates'}</span></div><div class="intel-audit-grid"><div class="intel-audit-summary"><div><span>Potential duplicate rows</span><strong>${duplicates.toLocaleString()}</strong></div><div><span>Published tracks</span><strong>${published.toLocaleString()}</strong></div><div><span>Catalogue records</span><strong>${total.toLocaleString()}</strong></div></div><div class="intel-audit-list">${duplicateHtml}</div></div><p class="intel-chart-foot">Duplicate detection compares normalised title + artist metadata. It does not perform an audio fingerprint comparison, so alternate filenames or metadata may still represent the same recording.</p></section>
     <details class="intel-panel intel-more-panel"><summary>Show more platform details</summary><div class="intel-details-grid"><div><h3>Service and storage notes</h3><p>${esc(m.metrics_note||'Metrics are based on the latest admin overview response.')}</p><p>R2 objects scanned: ${Number(m.audio_objects_scanned||0).toLocaleString()} · Storage: ${(Number(m.audio_bytes_scanned||0)/1024**3).toFixed(3)} GB · Snapshot duration: ${Number(data.elapsed_ms||0)} ms.</p></div><div><h3>Data coverage</h3><p>Live names, current tracks and session duration come from the existing Realtime presence channel. Historical playtime is available only as platform-wide totals; the existing admin metrics do not expose past play events by individual user.</p><p>Guest IP addresses are not read or displayed in this browser dashboard.</p></div><div><h3>Catalogue protection</h3><p>Uploads are blocked when normalised title and artist match an existing catalogue item. This is a metadata check, not proof of identical audio content.</p></div></div></details>
     <div class="intel-board-footer"><span><i class="intel-health-dot"></i>${esc(status)}</span><span>Analytics snapshot · ${esc(updated)} · Realtime audience updates independently</span></div>`;
-  renderIntelligenceLiveBlocks();
+  // Repaint the live audience from the existing Presence snapshot after the dashboard DOM exists.
+  // A route change does not necessarily trigger a fresh Realtime sync/join event.
+  renderLivePresence();
 }
 
 /* ---------- delegated clicks ---------- */
@@ -1578,6 +1673,9 @@ $('view').addEventListener('click', (e) => {
       case 'admin-catalog-less': adminCatalogVisible = 5; if (adminOverview) renderAdminOverview(adminOverview); break;
       case 'admin-audit-more': adminAuditVisible += 8; if (adminOverview) renderAdminOverview(adminOverview); break;
       case 'admin-audit-less': adminAuditVisible = 5; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'audience-filter': liveAudienceFilter = ['all','listening','online'].includes(a.dataset.filter) ? a.dataset.filter : 'all'; liveAudienceVisible = 10; renderLivePresence(); break;
+      case 'audience-more': liveAudienceVisible += 10; renderLivePresence(); break;
+      case 'audience-less': liveAudienceVisible = 10; renderLivePresence(); break;
       case 'admin-delete': deleteAdminTrack(id); break;
       case 'admin-edit': editAdminTrack(id); break;
       case 'signout': signOutUser(a); break;
@@ -1589,6 +1687,7 @@ $('view').addEventListener('click', (e) => {
 });
 $('view').addEventListener('input', (e) => {
   if (e.target.id === 'adminCatalogSearch') { adminCatalogQuery = e.target.value; adminCatalogVisible = 5; if (adminOverview) renderAdminOverview(adminOverview); const search=$('adminCatalogSearch'); if(search){search.focus();search.setSelectionRange(search.value.length,search.value.length);} }
+  if (e.target.id === 'adminLiveAudienceSearch' || e.target.id === 'intelLiveAudienceSearch') { liveAudienceQuery = e.target.value; liveAudienceVisible = 10; renderLivePresence(); const search=$(e.target.id); if(search){search.focus();search.setSelectionRange(search.value.length,search.value.length);} }
   if (e.target.id === 'prefDisplayName') preferenceNameDraft = e.target.value;
   if (e.target.id === 'autoplayNext') autoplayDraft = e.target.checked;
   if (e.target.id === 'settingsVolume') { const value=Math.max(0,Math.min(100,Number(e.target.value)||0)); $('vol').value=String(value); setVol(value); store.set('sonora-vol',value); const label=$('settingsVolumeValue'); if(label)label.textContent=`${value}%`; }
@@ -1854,7 +1953,7 @@ async function init() {
   });
   // Start presence only after Supabase has restored the current auth state/JWT.
   startLivePresence();
-  if (!livePresenceHeartbeatTimer) livePresenceHeartbeatTimer = window.setInterval(() => { if (livePresenceReady) publishLivePresence(); }, 15000);
+  if (!livePresenceHeartbeatTimer) livePresenceHeartbeatTimer = window.setInterval(async () => { if (livePresenceReady) { await publishLivePresence(); readLivePresenceSnapshot(); if (['admin','diagnostics'].includes(route().name)) renderLivePresence(); } }, 15000);
   if (!user && !store.get('sonora-guest', false)) showAuth('signin');
   await loadCatalogue();
   if (!user) await loadLibrary();

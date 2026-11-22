@@ -180,3 +180,10 @@ Commit and push the full contents of this project folder to the existing GitHub 
 
 ### Live presence v3.13 notes
 Realtime presence initializes only after the Supabase session has been restored. The admin view shows both active listening sessions and connected browser sessions plus last-sync diagnostics. All browsers that should appear must load a frontend version that publishes to the shared `sonora-live-listeners` topic. Because the current channel remains public to avoid requiring backend authorization changes, never publish emails, IP addresses or sensitive profile data through its presence payload. A two-browser deployment check is required; hosted Realtime authorization or availability cannot be proven by a static code audit.
+
+
+## v3.17 live-audience improvements
+- Improved compatibility for live presence payloads from previous clients and Unix-second timestamps.
+- Added connected/member/guest session summaries, searchable audience lists, status filters, and incremental Show More.
+- Added clearer freshness, heartbeat and stale-session diagnostics plus retry backoff and browser-online recovery.
+- Frontend only; database-level historical user analytics and admin-only channel authorization remain separate backend tasks.

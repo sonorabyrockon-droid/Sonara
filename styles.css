@@ -664,3 +664,29 @@ dialog::backdrop{background:rgba(8,5,20,.5);backdrop-filter:blur(6px)}
 .presence-state-pill.is-online{color:var(--muted);background:var(--field)}
 .intel-playing-dot.is-online{background:var(--muted);box-shadow:none}
 @media(max-width:760px){.admin-live-grid{grid-template-columns:1fr}.admin-live-subhead{align-items:flex-start;flex-direction:column}.admin-live-subhead small{text-align:left}}
+
+
+/* SONORA 3.17 — richer, searchable live-audience operations panel */
+.live-audience-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:12px 0 10px}
+.live-audience-summary>div{display:flex;align-items:baseline;gap:9px;min-width:0;padding:11px 13px;border:1px solid var(--stroke);border-radius:12px;background:var(--glass2)}
+.live-audience-summary strong{font:800 22px/1 var(--font-d);letter-spacing:-.04em;color:var(--text);font-variant-numeric:tabular-nums}
+.live-audience-summary span{font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+.live-audience-tools{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin:8px 0 10px}
+.live-audience-search{min-width:0;height:36px;font-size:11px}
+.live-audience-filters{display:flex;gap:4px;padding:3px;border:1px solid var(--stroke);border-radius:10px;background:var(--glass)}
+.live-audience-filters button{border:0;background:transparent;color:var(--muted);border-radius:7px;padding:7px 9px;font-size:9px;font-weight:800;cursor:pointer}
+.live-audience-filters button.selected{background:var(--accent);color:#fff;box-shadow:0 3px 9px color-mix(in srgb,var(--accent) 24%,transparent)}
+.audience-user-enhanced{grid-template-columns:34px minmax(0,1fr) auto auto}
+.audience-user-enhanced .intel-user-main small{white-space:normal;line-height:1.4;max-height:2.8em;overflow:hidden}
+.audience-status-tag{font-size:8px;font-weight:850;letter-spacing:.06em;padding:5px 7px;border-radius:99px;white-space:nowrap}
+.audience-status-tag.is-playing{color:#39c995;background:rgba(57,201,149,.13)}
+.audience-status-tag.is-online{color:var(--muted);background:var(--field)}
+.live-audience-footer{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 2px 2px;color:var(--muted);font-size:9px}
+.live-audience-footer .btn{flex:none}
+.intel-audience-summary{margin:0 0 9px}
+.intel-user-list{max-height:440px}
+.admin-live-users{max-height:470px}
+.live-presence-diagnostic{overflow-wrap:anywhere}
+@media(max-width:760px){.live-audience-tools{grid-template-columns:1fr}.live-audience-filters{width:100%}.live-audience-filters button{flex:1}.audience-user-enhanced{grid-template-columns:32px minmax(0,1fr) auto}.audience-user-enhanced .audience-status-tag{grid-column:2/-1;justify-self:start;margin-top:-3px}.live-audience-summary>div{display:grid;gap:4px;padding:9px}.live-audience-summary strong{font-size:19px}.live-audience-summary span{font-size:9px}.live-audience-footer{align-items:flex-start;flex-direction:column}}
+
+.audience-self-tag{display:inline-block;margin-left:5px;padding:2px 5px;border-radius:99px;background:var(--field);color:var(--accent);font-size:7px;letter-spacing:.08em;vertical-align:1px}

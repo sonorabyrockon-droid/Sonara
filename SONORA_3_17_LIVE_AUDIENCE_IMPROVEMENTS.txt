@@ -1,0 +1,19 @@
+SONORA 3.17 — Live Audience & Diagnostics Improvements
+
+Frontend-only changes:
+- Normalises Presence metadata across current and older SONORA clients (session key, display-name, track-title, playback-state and heartbeat aliases).
+- Correctly parses Unix timestamps expressed in seconds or milliseconds.
+- Uses one shared playing-state normaliser for Now Playing and connected-user rows.
+- Shows connected sessions separately from active playback, with connected, signed-in and guest session totals.
+- Adds search, All / Listening / Online filters, and Show More / Show Less to both Admin and Music Intelligence audience lists.
+- Adds last-seen/session timing and clearer legacy/stale presence diagnostics.
+- Adds retry backoff including CLOSED channels, browser-online recovery, visible-tab republish and a 15-second diagnostics refresh.
+- Uses a new app asset/cache version (3.17.0).
+
+Data/security boundaries:
+- Presence remains on the existing public topic `sonora-live-listeners` for compatibility with the existing frontend-only setup.
+- No email, raw IP, auth token or user UUID is included in the presence payload or the Admin people list.
+- The database audit shows `sonora_play_events` has user-owned SELECT policies; frontend code cannot securely read other users' historical playback events. The existing stats RPC is aggregate-only and EXECUTE is granted to the Worker service role, not authenticated users.
+- Admin-only history, persistent guest analytics, audio fingerprinting and private channel authorization require separate backend work and were not implemented here.
+
+No Worker source, SQL, database schema, RLS policy, API route, secret, or deployment configuration was modified.
