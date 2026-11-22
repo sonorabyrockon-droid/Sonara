@@ -1,0 +1,36 @@
+SONORA 3.7 — FRONTEND-ONLY UPDATE
+
+Scope
+- Client-side files changed: app.js, styles.css, index.html.
+- No Cloudflare Worker source, Supabase SQL, database schema, API endpoint, secret, config.js, or deployment setting was changed.
+
+Admin dashboard
+- Replaced the R2 object-count KPI card with a Live listeners KPI.
+- Added a Now playing panel grouped by track and current listener-session count.
+- Added catalogue genre distribution, seven-day upload trend, lifetime listening engagement, service response-time, and storage/publishing charts.
+- Kept R2 scan/storage figures in the supporting analytics rather than using them as the headline KPI.
+
+Live listener count — important limitation
+- The browser publishes ephemeral playback presence to the existing Supabase Realtime channel named "sonora-live-listeners".
+- The admin KPI counts active listening sessions from browser clients running this updated frontend; it is not a server-side user count and multiple devices/tabs can count as separate sessions.
+- Supabase Realtime Presence must be enabled and the project must permit clients to subscribe/track on this channel. If it is unavailable, the dashboard shows an unavailable state instead of making up a count.
+- Older browser sessions running a previous frontend build will not publish this presence until they load the updated site.
+- Presence includes the currently playing track metadata, but does not publish an email address or profile identity.
+
+Library and soundtrack grouping
+- Added Albums & soundtracks navigation and album detail pages.
+- Album collections are derived from the album metadata already attached to catalogue tracks; no database table or server endpoint was added.
+- Common soundtrack labels such as "Original Motion Picture Soundtrack", "Soundtrack", and "OST" are normalized when grouping albums.
+- Admin upload metadata detection reads embedded tags and, when internet access is available, matches title/artist against the iTunes Search API. Batch uploads reuse the same collection match so songs from the same recognised release use a consistent album name.
+- If no online match is found, embedded album tags are retained; the uploader can review/edit metadata before publishing.
+
+Listener experience and settings
+- Redesigned Liked Songs and playlists with collection artwork, track counts, Play/Shuffle controls, and clearer playlist detail pages.
+- Redesigned Appearance & playback with the SONORA logo, System/Dark/Light modes, coordinated accent palettes, autoplay, and a default-volume control.
+- Appearance and autoplay settings save to the device for guests and sync through the existing preference storage for signed-in users. Volume remains device-local.
+
+Validation performed
+- JavaScript syntax check passed (node --check app.js).
+- CSS parsed with zero top-level syntax errors.
+- HTML checked for duplicate IDs; none found.
+- Confirmed only app.js, styles.css, and index.html differ from the supplied archive. A headless Chromium smoke test was attempted but could not complete in this execution environment.

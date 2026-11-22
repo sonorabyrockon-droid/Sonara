@@ -1,0 +1,13 @@
+name = "sonora-stream"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+ALLOWED_ORIGIN = "https://sonorabyrockon-droid.github.io"
+SUPABASE_URL = "https://vpvgmebrmbgdsaoxyhew.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_rU8ecpCZcQCIZ3aOaYmPEQ_brzZ0FOA"
+ADMIN_EMAIL = "27-swyam.sanchit@fiib.edu.in"
+
+[[r2_buckets]]
+binding = "AUDIO"
+bucket_name = "sonora-audio"
