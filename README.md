@@ -166,7 +166,7 @@ Cloudflare CPU time, Worker request volume, edge error rates and billable usage 
 
 - Account-level theme mode (`system`, `dark`, `light`) and four accent palettes (`violet`, `ocean`, `emerald`, `rose`). Preferences sync through `sonora_user_preferences` after the SQL migration is applied.
 - Multi-file admin audio uploads. Each file is processed sequentially, scanned independently for embedded tags/artwork/duration, and checked against iTunes metadata when its album is missing or marked `Single`. Filename parsing is a title fallback; artist remains a manual field if it cannot be identified.
-- PWA install support for phones and computers (`manifest.webmanifest`, `sw.js`). The service worker caches only the app shell; it does not cache authenticated data or audio streams.
+- Historical PWA assets (`manifest.webmanifest`, `sw.js`) remain in the repository for compatibility, but the current main website does not link the manifest or register a new service worker. SONORA opens as a responsive website in the phone or desktop browser; the 3.19 cleanup removes only this project’s old worker and shell cache.
 - Desktop Chrome launcher extension in `extension/`. It opens SONORA in a new tab and requests no browsing permissions. It is not a Chrome Android extension; use the PWA on phones.
 
 ### Required Supabase update
@@ -187,3 +187,17 @@ Realtime presence initializes only after the Supabase session has been restored.
 - Added connected/member/guest session summaries, searchable audience lists, status filters, and incremental Show More.
 - Added clearer freshness, heartbeat and stale-session diagnostics plus retry backoff and browser-online recovery.
 - Frontend only; database-level historical user analytics and admin-only channel authorization remain separate backend tasks.
+
+
+### SONORA 3.18 — Mobile player
+
+The 3.18 frontend adds a full-screen mobile Now Playing view, visible shuffle/repeat controls, Repeat Off/All/One modes, editable Up Next queue, playback speed, expanded volume/seek controls and browser Media Session actions. Playback preferences are stored locally on the device.
+
+
+### SONORA 3.19 — Whole UI mobile and desktop audit
+
+The 3.19 frontend audit fixes three responsive issues: the compact phone player now shows Shuffle and Repeat, verified administrators get a mobile Admin navigation shortcut, and safe-area spacing prevents the player/navigation/toasts from covering the bottom of page content. Queue accessibility state is exposed through `aria-controls` and `aria-expanded`.
+
+Legacy service-worker cleanup is scoped to SONORA's own `sw.js` registration, so it does not remove unrelated workers on the same origin. Frontend asset URLs and shell cache are versioned to 3.19.0.
+
+Local simulated-browser checks covered 10 primary routes at nine viewport widths, mock playback interactions, mock Admin and Music Intelligence rendering on six device widths, and the desktop launcher popup. These tests do not replace live Supabase/Worker/R2 testing or physical-device checks.

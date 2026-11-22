@@ -49,3 +49,32 @@
 - Admin displays active sessions separately from connected sessions and exposes last-sync diagnostics.
 - The existing channel is public to support browser announcements without backend changes; presence payloads must not include email/IP or sensitive profile data. Admin-only channel authorization needs backend work and remains out of scope.
 - A real two-browser test against the hosted Supabase project is still required after deploy.
+
+## SONORA 3.18 — Phone experience and playback audit
+
+The phone player now provides a full-screen Now Playing surface, with shuffle and three repeat modes (Off, All, One), current-track like control, playback speed, volume, seek/progress, previous/next, a viewable/editable Up Next queue, Clear Upcoming, and Media Session actions where supported. Track rows expose Add to Queue. The compact mobile player now keeps shuffle and repeat visible rather than hiding them.
+
+A local simulated-browser smoke test passed at 320, 360, 390 and 430 CSS-pixel widths. It checked Home, Search, Liked Songs, Playlists, Albums, Album detail and Settings for horizontal overflow; no overflow or browser page errors were reported. Repeat-mode switching, audio loop state, shuffle state synchronisation, playback rate, queue clearing and queue addition were exercised with mocked catalogue/audio services. Real-device background playback and operating-system lock-screen controls remain dependent on browser/OS capabilities and require deployment testing.
+
+This release changes only frontend files and documentation. Cloudflare Worker source, SQL files, database schema, RLS policies, Supabase configuration, API routes and deployment configuration are unchanged.
+
+## SONORA 3.19 — Whole-interface responsive audit
+
+- Restored the compact-player Shuffle and Repeat controls on phone layouts; an older responsive rule had hidden both control wrappers.
+- Added a dedicated mobile Admin shortcut for verified administrators, alongside Music & Audience Intelligence.
+- Increased phone bottom safe-area spacing so the compact player, bottom navigation and toast notifications do not cover the last scrollable content.
+- Added accessible queue-toggle state (`aria-controls` and `aria-expanded`) and retained versioned frontend asset URLs/cache names.
+- Scoped legacy service-worker cleanup to SONORA's own `sw.js` registration. Other service workers on the same origin are left alone; only SONORA shell caches are removed.
+- No Worker, SQL, database schema, RLS policy, API handler, secret, or deployment configuration changes.
+
+### Validation performed
+- JavaScript syntax checks passed for `app.js` and `sw.js`.
+- HTML parsed with no duplicate IDs, no missing local asset references, and no buttons missing an explicit type.
+- CSS parsed with no syntax errors.
+- Simulated browser route smoke tests covered Home, Search, Liked Songs, Playlists, Albums, Album detail, Settings, Preferences, Admin and Music Intelligence at 320, 360, 390, 430, 768, 861, 1024, 1366 and 1920 CSS-pixel widths; no horizontal overflow or browser page errors were observed.
+- Additional layout checks covered a 320×568 small phone, 667×375 landscape phone, tablet, small laptop, standard desktop and wide desktop; no horizontal overflow.
+- Mock-catalogue interaction checks passed for Repeat Off/All/One, audio loop state, Shuffle synchronisation, playback speed, volume, queue add/remove/clear, queue open/close, expanded-player open/close, appearance toggle and auth-panel mode changes.
+- Mocked Admin response rendering passed on phone, tablet and desktop; chart panels rendered and Show More expanded from 5 to 15 catalogue rows and 5 to 13 activity entries.
+- Chrome launcher popup layout and its Open SONORA action passed with a mocked `chrome.tabs.create` API.
+
+These are local simulated-browser tests with mocked/empty backend services, not a live test against the hosted Supabase, Cloudflare Worker, R2 bucket or physical devices. Real sign-in, remote playback, Realtime presence and background/lock-screen behaviour still require deployment testing.

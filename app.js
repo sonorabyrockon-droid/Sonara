@@ -37,7 +37,6 @@ let preferencesSchemaReady = false;
 let userPreferences = { display_name:'', preferred_genres:[], preferred_moods:[], onboarding_completed:false, autoplay_next:store.get('sonora-autoplay-next', true), theme_mode:'system', theme_accent:'violet' };
 let themeMode = localStorage.getItem('sonora-theme-mode') || 'system';
 let themeAccent = localStorage.getItem('sonora-theme-accent') || 'violet';
-let deferredInstallPrompt = null;
 let preferenceDraft = { genres:[], moods:[] };
 let preferenceNameDraft = '';
 let autoplayDraft = store.get('sonora-autoplay-next', true);
@@ -57,11 +56,12 @@ let pendingPlaySeconds = 0, sessionPlayedSeconds = 0, currentPlayEventId = null,
 let tracks = [];
 let liked = new Set(oldLikes);
 let playlists = oldPlaylists;
-let active = null, queue = [], shuffle = false, query = '', genre = 'All', loaded = false, loadError = false;
+let active = null, queue = [], shuffle = Boolean(store.get('sonora-shuffle', false)), repeatMode = ['off','all','one'].includes(store.get('sonora-repeat-mode','off')) ? store.get('sonora-repeat-mode','off') : 'off', query = '', genre = 'All', loaded = false, loadError = false;
 
 const PREFERENCE_GENRES = ['Pop','Hip-hop','R&B','Electronic','Rock','Indie','Jazz','Classical','Ambient','Folk','Bollywood','Afrobeats','Latin','Country','Metal','Soul'];
 const PREFERENCE_MOODS = ['Chill','Energetic','Focus','Romantic','Workout','Party','Acoustic','Late night','Feel-good','Melancholy'];
 const audio = $('audio');
+audio.loop = repeatMode === 'one';
 const byId = (id) => tracks.find((t) => t.id === id);
 const isCloudUser = () => Boolean(sb && user);
 
@@ -142,12 +142,13 @@ function row(t, i, ctx, opts = {}) {
   const act = opts.remove
     ? `<button class="icon-btn" data-act="remove" aria-label="Remove from playlist">${ic('x')}</button>`
     : `<button class="icon-btn" data-act="add" aria-label="Add to playlist">${ic('plus')}</button>`;
+  const queueAct = `<button class="icon-btn queue-add-btn" data-act="queue-add" aria-label="Add ${esc(t.title)} to queue" title="Add to queue">${ic('queue')}</button>`;
   return `<div class="row${on ? ' active' : ''}${on && !audio.paused ? ' playing' : ''}" tabindex="0" data-id="${esc(t.id)}" data-ctx="${esc(ctx)}" aria-label="Play ${esc(t.title)} by ${esc(t.artist)}">
     <div class="num"><span>${i + 1}</span><div class="eq" aria-hidden="true"><i></i><i></i><i></i></div></div>
     ${cover(t)}
     <div style="min-width:0"><span class="name">${esc(t.title)}</span><span class="by">${esc(t.artist)}</span></div>
     <span class="alb">${esc(t.album)}</span><span class="dur">${t.duration ? fmt(t.duration) : ''}</span>
-    ${act}
+    ${queueAct}${act}
     <button class="icon-btn like${lk ? ' on' : ''}" data-act="like" aria-pressed="${lk}" aria-label="${lk ? 'Unlike' : 'Like'} ${esc(t.title)}">${ic(lk ? 'heart-fill' : 'heart')}</button></div>`;
 }
 const rows = (list, ctx, opts) => `<div class="rows" data-ctx="${esc(ctx)}">${list.map((t, i) => row(t, i, ctx, opts)).join('')}</div>`;
@@ -618,7 +619,7 @@ async function publishLivePresence() {
   if (!playing) { liveTrackIdentity = ''; liveTrackStartedAt = 0; }
   const payload = {
     presence_version: LIVE_PRESENCE_VERSION,
-    app_version: '3.17.0',
+    app_version: '3.19.0',
     last_seen_at: Date.now(),
     playback_state: playing ? 'playing' : 'idle',
     session_id: liveSessionKey,
@@ -1332,26 +1333,66 @@ window.addEventListener('hashchange', () => { render(); window.scrollTo({ top:0 
 
 /* ---------- playback ---------- */
 const setIcon = (btn, name) => { btn.innerHTML = ic(name); };
+function syncPlayerControls() {
+  const playing = Boolean(active && !audio.paused);
+  [['play',playing],['expandedPlay',playing]].forEach(([id,on]) => {
+    const b=$(id); if(!b)return; setIcon(b,on?'pause':'play'); b.setAttribute('aria-label',on?'Pause':'Play');
+  });
+  [['shuffle',shuffle],['expandedShuffle',shuffle]].forEach(([id,on])=>{const b=$(id);if(!b)return;b.classList.toggle('on',on);b.setAttribute('aria-pressed',String(on));b.setAttribute('aria-label',on?'Shuffle on':'Shuffle off');});
+  const repeatLabel = repeatMode==='one'?'Repeat one':repeatMode==='all'?'Repeat all':'Repeat off';
+  ['repeat','expandedRepeat'].forEach(id=>{const b=$(id);if(!b)return;b.classList.toggle('on',repeatMode!=='off');b.setAttribute('aria-pressed',String(repeatMode!=='off'));b.setAttribute('aria-label',repeatLabel);b.title=repeatLabel;b.innerHTML=ic('repeat')+(repeatMode==='one'?'<span class="repeat-one-badge">1</span>':'');});
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : (active?'paused':'none');
+}
 function syncPlaying() {
   const playing = active && !audio.paused;
-  setIcon($('play'), playing ? 'pause' : 'play');
-  $('play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  syncPlayerControls();
   qsa('.row[data-id]').forEach((r) => { const on = r.dataset.id === active?.id; r.classList.toggle('active', on); r.classList.toggle('playing', on && playing); });
-  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
   publishLivePresence();
 }
 function syncLike() {
   const lk = Boolean(active && liked.has(active.id));
-  setIcon($('npLike'), lk ? 'heart-fill' : 'heart'); $('npLike').classList.toggle('on', lk); $('npLike').setAttribute('aria-pressed', lk);
+  [ $('npLike'), $('expandedLike') ].forEach(btn=>{if(!btn)return;setIcon(btn,lk?'heart-fill':'heart');btn.classList.toggle('on',lk);btn.setAttribute('aria-pressed',String(lk));btn.setAttribute('aria-label',lk?'Unlike track':'Like track');});
 }
+function updateCoverElement(el,t) {
+  if(!el||!t)return;
+  el.style.setProperty('--h1',hue(t.id));el.style.setProperty('--h2',(hue(t.id)+60)%360);
+  el.innerHTML=`<b>${esc((t.title||'S').slice(0,1))}</b>${t.coverUrl?`<img src="${esc(t.coverUrl)}" alt="" decoding="async">`:''}`;
+}
+function renderExpandedQueue() {
+  const target=$('expandedQueueList'); if(!target)return;
+  const ids=queue.length?queue:tracks.map(t=>t.id);
+  if(!ids.length){target.innerHTML='<p class="muted">Your queue is empty. Play an album or playlist to build your queue.</p>';return;}
+  target.innerHTML=ids.map((id,index)=>{const t=byId(id);if(!t)return '';const current=t.id===active?.id;return `<div class="expanded-queue-row${current?' is-current':''}"><button type="button" class="expanded-queue-item" data-queue-play="${esc(t.id)}"><span class="expanded-queue-index">${current?ic('play'):index+1}</span>${cover(t,'queue-cover')}<span class="expanded-queue-copy"><strong>${esc(t.title)}</strong><small>${esc(t.artist)}</small></span>${current?'<span class="queue-current-label">PLAYING</span>':''}</button>${!current?`<button type="button" class="icon-btn queue-remove" data-queue-remove="${esc(t.id)}" aria-label="Remove ${esc(t.title)} from queue">${ic('x')}</button>`:''}</div>`;}).join('');
+}
+function syncExpandedPlayer() {
+  const overlay=$('nowPlayingExpanded'); if(!overlay)return;
+  const t=active;
+  $('expandedTitle').textContent=t?.title||'Nothing playing';$('expandedArtist').textContent=t?.artist||'Pick a track to start';$('expandedAlbum').textContent=t?.album||'SONORA';
+  updateCoverElement($('expandedCover'),t);
+  const dur=Number(audio.duration)||Number(t?.duration)||0;
+  $('expandedDur').textContent=fmt(dur);$('expandedCur').textContent=fmt(audio.currentTime||0);
+  if(!$('expandedSeek').matches(':active')){$('expandedSeek').value=dur?String(Math.round((audio.currentTime/dur)*1000)):0;$('expandedSeek').style.setProperty('--p',`${dur?Math.max(0,Math.min(1,audio.currentTime/dur))*100:0}%`);}
+  if($('playbackSpeed'))$('playbackSpeed').value=String(audio.playbackRate||1);
+  if($('expandedVolume')&&!$('expandedVolume').matches(':active'))$('expandedVolume').value=String(Math.round(audio.volume*100));
+  syncPlayerControls();syncLike();
+}
+let nowPlayingReturnFocus=null;
+function openNowPlaying(showQueue=false) {
+  if(!active){notify('Pick a song to start listening.');return;}
+  const panel=$('nowPlayingExpanded');nowPlayingReturnFocus=document.activeElement;panel.classList.remove('hidden');panel.setAttribute('aria-hidden','false');document.body.classList.add('now-playing-open');syncExpandedPlayer();renderExpandedQueue();$('closeNowPlaying').focus({preventScroll:true});
+  if(showQueue)showExpandedQueue(true);
+}
+function closeNowPlaying() {const panel=$('nowPlayingExpanded');panel.classList.add('hidden');panel.setAttribute('aria-hidden','true');document.body.classList.remove('now-playing-open');if(nowPlayingReturnFocus?.focus)nowPlayingReturnFocus.focus({preventScroll:true});}
+function showExpandedQueue(show) {const q=$('expandedQueue');if(!q)return;q.classList.toggle('hidden',!show);$('expandedQueueToggle').setAttribute('aria-expanded',String(show));if(show)q.scrollIntoView({block:'nearest',behavior:'smooth'});}
+function setShuffle(value) {shuffle=Boolean(value);store.set('sonora-shuffle',shuffle);syncPlayerControls();}
+function cycleRepeat() {repeatMode=repeatMode==='off'?'all':repeatMode==='all'?'one':'off';audio.loop=repeatMode==='one';store.set('sonora-repeat-mode',repeatMode);syncPlayerControls();notify(repeatMode==='off'?'Repeat off':repeatMode==='all'?'Repeat all':'Repeating this song');}
 function setActive(t) {
   active = t;
   $('npTitle').textContent = t.title; $('npArtist').textContent = t.artist;
-  const c = $('npCover'); c.style.setProperty('--h1', hue(t.id)); c.style.setProperty('--h2', (hue(t.id) + 60) % 360);
-  c.innerHTML = `<b>${esc(t.title.slice(0, 1))}</b>${t.coverUrl ? `<img src="${esc(t.coverUrl)}" alt="">` : ''}`;
+  updateCoverElement($('npCover'),t);
   $('dur').textContent = fmt(t.duration); $('cur').textContent = '0:00'; setSeek(0);
-  store.set('sonora-last', t.id); syncLike();
-  if ('mediaSession' in navigator && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title:t.title, artist:t.artist, album:t.album });
+  store.set('sonora-last', t.id); syncLike();syncExpandedPlayer();renderExpandedQueue();
+  if ('mediaSession' in navigator && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title:t.title, artist:t.artist, album:t.album, artwork:t.coverUrl?[{src:t.coverUrl,sizes:'512x512',type:'image/jpeg'}]:[] });
 }
 function load(t, autoplay) {
   setActive(t);
@@ -1372,9 +1413,10 @@ function playContext(ctx, randomize = false) {
   if (!list.length) return;
   queue=list.map(track=>track.id);
   if (randomize) {
+    setShuffle(true);
     for(let i=queue.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[queue[i],queue[j]]=[queue[j],queue[i]];}
-    shuffle=true; $('shuffle').classList.add('on'); $('shuffle').setAttribute('aria-pressed','true');
   }
+  renderExpandedQueue();
   const first=byId(queue[0]); if(first)load(first,true);
 }
 function toggle() {
@@ -1382,10 +1424,26 @@ function toggle() {
   if (!audio.src) { load(active, true); return; }
   audio.paused ? audio.play().catch(() => notify('Could not start playback.')) : audio.pause();
 }
+function addToQueue(trackId) {
+  const track=byId(trackId);if(!track)return;
+  if(trackId===active?.id){notify('This track is already playing.');return;}
+  if(queue.includes(trackId)){notify('This track is already in your queue.');return;}
+  if(!queue.length&&active)queue=[active.id];
+  queue.push(trackId);
+  renderExpandedQueue();
+  notify(`Added ${track.title} to your queue.`);
+}
+function clearUpcomingQueue() {
+  queue=active?[active.id]:[];
+  renderExpandedQueue();
+  notify('Upcoming queue cleared.');
+}
+
 function step(dir, auto) {
   if (!queue.length) queue = tracks.map((t) => t.id);
+  if (!queue.length) return;
   const i = queue.indexOf(active?.id);
-  if (auto && !shuffle && i === queue.length - 1 && !audio.loop) { audio.pause(); audio.currentTime = 0; return; }
+  if (auto && repeatMode !== 'all' && !shuffle && i === queue.length - 1) { audio.pause(); audio.currentTime = 0; syncExpandedPlayer(); return; }
   let n;
   if (shuffle && queue.length > 1) { do { n = Math.floor(Math.random() * queue.length); } while (n === i); }
   else n = (i + dir + queue.length) % queue.length;
@@ -1435,6 +1493,7 @@ async function finishPlaybackEvent() {
 }
 audio.addEventListener('timeupdate', () => {
   const d = audio.duration; $('cur').textContent = fmt(audio.currentTime); if (d) setSeek(audio.currentTime / d);
+  if ($('nowPlayingExpanded') && !$('nowPlayingExpanded').classList.contains('hidden')) syncExpandedPlayer();
   if (audio.paused || !active?.id) { lastPlaybackPosition = audio.currentTime; lastPlaybackTrackId = active?.id || null; return; }
   if (lastPlaybackTrackId !== active.id) { lastPlaybackTrackId = active.id; lastPlaybackPosition = audio.currentTime; return; }
   const previous = lastPlaybackPosition;
@@ -1448,7 +1507,7 @@ audio.addEventListener('play', () => { lastPlaybackPosition = audio.currentTime;
 audio.addEventListener('pause', () => { finishPlaybackEvent(); });
 audio.addEventListener('ended', () => { finishPlaybackEvent(); });
 window.addEventListener('pagehide', () => { finishPlaybackEvent(); try { livePresenceChannel?.untrack(); } catch (error) { console.warn('SONORA presence untrack:', error?.message || error); } });
-audio.addEventListener('loadedmetadata', () => { $('dur').textContent = fmt(audio.duration); });
+audio.addEventListener('loadedmetadata', () => { $('dur').textContent = fmt(audio.duration); syncExpandedPlayer(); });
 audio.addEventListener('play', syncPlaying); audio.addEventListener('pause', syncPlaying);
 audio.addEventListener('playing', () => { syncPlaying(); publishLivePresence(); });
 audio.addEventListener('ended', () => publishLivePresence());
@@ -1457,9 +1516,10 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && li
 window.addEventListener('online', () => { if (sb && !livePresenceReady && livePresenceChannel) scheduleLivePresenceReconnect(livePresenceChannel, livePresenceEpoch); });
 audio.addEventListener('waiting', () => $('play').classList.add('loading'));
 ['playing', 'canplay', 'pause', 'error'].forEach((e) => audio.addEventListener(e, () => $('play').classList.remove('loading')));
-audio.addEventListener('ended', () => { if (userPreferences.autoplay_next !== false) step(1, true); });
+audio.addEventListener('ended', () => { if (repeatMode === 'all' || userPreferences.autoplay_next !== false) step(1, true); });
 audio.addEventListener('error', () => { if (audio.src && active) notify('This track could not be streamed. Check that your Worker is deployed and the file exists in R2.'); });
 $('seek').addEventListener('input', (e) => { const p = e.target.value / 1000; e.target.style.setProperty('--p', `${p * 100}%`); if (audio.duration) audio.currentTime = audio.duration * p; });
+$('expandedSeek').addEventListener('input', (e) => { const p=e.target.value/1000;e.target.style.setProperty('--p',`${p*100}%`);if(audio.duration)audio.currentTime=audio.duration*p;$('expandedCur').textContent=fmt(audio.currentTime); });
 const setVol = (v) => { audio.volume = v / 100; $('vol').style.setProperty('--p', `${v}%`); setIcon($('muteBtn'), v === 0 || audio.muted ? 'mute' : 'volume'); };
 $('vol').addEventListener('input', (e) => { audio.muted = false; setVol(Number(e.target.value)); store.set('sonora-vol', Number(e.target.value)); });
 $('muteBtn').addEventListener('click', () => { audio.muted = !audio.muted; setVol(Number($('vol').value)); });
@@ -1467,15 +1527,44 @@ $('vol').value = store.get('sonora-vol', 80); setVol(Number($('vol').value));
 $('play').addEventListener('click', toggle);
 $('prev').addEventListener('click', () => { if (audio.currentTime > 3) audio.currentTime = 0; else step(-1); });
 $('next').addEventListener('click', () => step(1));
-$('shuffle').addEventListener('click', (e) => { shuffle = !shuffle; e.currentTarget.classList.toggle('on', shuffle); e.currentTarget.setAttribute('aria-pressed', shuffle); });
-$('repeat').addEventListener('click', (e) => { audio.loop = !audio.loop; e.currentTarget.classList.toggle('on', audio.loop); e.currentTarget.setAttribute('aria-pressed', audio.loop); });
+$('shuffle').addEventListener('click', () => setShuffle(!shuffle));
+$('repeat').addEventListener('click', cycleRepeat);
 $('npLike').addEventListener('click', () => active && toggleLike(active.id));
+$('openNowPlaying').addEventListener('click', () => openNowPlaying(false));
+$('queueBtn').addEventListener('click', () => openNowPlaying(true));
+$('expandedQueueToggle').addEventListener('click', () => showExpandedQueue($('expandedQueue').classList.contains('hidden')));
+$('expandedQueueClose').addEventListener('click', () => showExpandedQueue(false));
+$('clearQueue').addEventListener('click',clearUpcomingQueue);
+$('closeNowPlaying').addEventListener('click', closeNowPlaying);$('closeNowPlayingBackdrop').addEventListener('click',closeNowPlaying);
+$('expandedPlay').addEventListener('click',toggle);$('expandedPrev').addEventListener('click',()=>{if(audio.currentTime>3)audio.currentTime=0;else step(-1);});$('expandedNext').addEventListener('click',()=>step(1));
+$('expandedShuffle').addEventListener('click',()=>setShuffle(!shuffle));$('expandedRepeat').addEventListener('click',cycleRepeat);$('expandedLike').addEventListener('click',()=>active&&toggleLike(active.id));
+$('playbackSpeed').addEventListener('change',e=>{const speed=Math.max(.5,Math.min(2,Number(e.target.value)||1));audio.playbackRate=speed;store.set('sonora-playback-speed',speed);});
+const initialSpeed=Math.max(.5,Math.min(2,Number(store.get('sonora-playback-speed',1))||1));audio.playbackRate=initialSpeed;$('playbackSpeed').value=String(initialSpeed);
+$('expandedVolume').addEventListener('input',e=>{const v=Math.max(0,Math.min(100,Number(e.target.value)||0));audio.muted=false;$('vol').value=String(v);setVol(v);store.set('sonora-vol',v);});
+$('nowPlayingExpanded').addEventListener('click',e=>{const playButton=e.target.closest('[data-queue-play]');const removeButton=e.target.closest('[data-queue-remove]');if(playButton){const id=playButton.dataset.queuePlay;const t=byId(id);if(t)load(t,true);return;}if(removeButton){const id=removeButton.dataset.queueRemove;queue=queue.filter(x=>x!==id);renderExpandedQueue();notify('Removed from queue.');}});
+$('nowPlayingExpanded').addEventListener('keydown',e=>{
+  if(e.key==='Tab'){
+    const items=qsa('button:not([disabled]),input:not([disabled]),select:not([disabled])',$('nowPlayingExpanded')).filter(el=>el.offsetParent!==null);
+    if(!items.length)return;
+    const first=items[0],last=items[items.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+  }
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('nowPlayingExpanded').classList.contains('hidden'))closeNowPlaying();});
 if ('mediaSession' in navigator) {
   const ms = navigator.mediaSession;
-  ms.setActionHandler('play', toggle); ms.setActionHandler('pause', toggle);
-  ms.setActionHandler('previoustrack', () => step(-1)); ms.setActionHandler('nexttrack', () => step(1));
-  try { ms.setActionHandler('seekto', (d) => { audio.currentTime = d.seekTime; }); } catch { /* unsupported */ }
+  const registerMediaAction = (name, handler) => { try { ms.setActionHandler(name, handler); } catch { /* action not supported by this browser */ } };
+  registerMediaAction('play', () => { if(audio.paused)toggle(); });
+  registerMediaAction('pause', () => { if(!audio.paused)audio.pause(); });
+  registerMediaAction('previoustrack', () => step(-1));
+  registerMediaAction('nexttrack', () => step(1));
+  registerMediaAction('seekto', (d) => { if(Number.isFinite(d.seekTime))audio.currentTime=d.seekTime; });
+  registerMediaAction('seekbackward', (d) => { audio.currentTime=Math.max(0,audio.currentTime-(d.seekOffset||10)); });
+  registerMediaAction('seekforward', (d) => { audio.currentTime=Math.min(audio.duration||Infinity,audio.currentTime+(d.seekOffset||10)); });
+  registerMediaAction('stop', () => { audio.pause(); audio.currentTime=0; syncExpandedPlayer(); });
 }
+syncPlayerControls();syncExpandedPlayer();
 
 /* ---------- likes & playlists ---------- */
 async function toggleLike(id) {
@@ -1653,6 +1742,7 @@ $('view').addEventListener('click', (e) => {
     const row = a.closest('.row'), id = a.dataset.id || row?.dataset.id, ctx = a.dataset.ctx || row?.dataset.ctx;
     switch (a.dataset.act) {
       case 'like': toggleLike(id); break;
+      case 'queue-add': addToQueue(id); break;
       case 'add': addDialog(id); break;
       case 'remove': removeFromPlaylist(route().id && decodeURIComponent(route().id), id); break;
       case 'playcard': play(id, ctx); break;
@@ -1793,6 +1883,8 @@ function refreshAccount() {
   if (intelligenceNav) intelligenceNav.classList.toggle('hidden', !isAdmin);
   const mobileIntelligenceNav = $('mobileDiagnosticsNav');
   if (mobileIntelligenceNav) mobileIntelligenceNav.classList.toggle('hidden', !isAdmin);
+  const mobileAdminNav = $('mobileAdminNav');
+  if (mobileAdminNav) mobileAdminNav.classList.toggle('hidden', !isAdmin);
 }
 async function finishPlaybackBeforeSignOut() {
   // Pause first so no further seconds are accrued while authentication is being cleared.
@@ -1885,8 +1977,33 @@ function newPasswordDialog() {
 }
 
 
-// SONORA is delivered as a responsive website. Unregister older PWA workers so old installs do not keep forcing the cached app shell.
-if ('serviceWorker' in navigator) { window.addEventListener('load', async () => { try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(reg => reg.unregister())); if ('caches' in window) { const keys = await caches.keys(); await Promise.all(keys.filter(key => key.startsWith('sonora-shell-')).map(key => caches.delete(key))); } } catch (err) { console.warn('Could not clear an old SONORA app cache:', err); } }); }
+// SONORA is delivered as a responsive website. Remove only SONORA's legacy
+// service worker; never unregister unrelated apps' workers on a shared origin.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      const appRoot = new URL('./', location.href);
+      const sonoraWorkerPath = new URL('sw.js', appRoot).pathname;
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      const sonoraRegistrations = registrations.filter((registration) => {
+        const workers = [registration.active, registration.waiting, registration.installing].filter(Boolean);
+        return workers.some((worker) => {
+          try {
+            const script = new URL(worker.scriptURL);
+            return script.origin === appRoot.origin && script.pathname === sonoraWorkerPath;
+          } catch { return false; }
+        });
+      });
+      await Promise.all(sonoraRegistrations.map((registration) => registration.unregister()));
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter((key) => key.startsWith('sonora-shell-')).map((key) => caches.delete(key)));
+      }
+    } catch (err) {
+      console.warn('Could not clear an old SONORA app cache:', err);
+    }
+  });
+}
 
 /* ---------- auth session orchestration + start ---------- */
 async function handleAuthSession(event, session) {

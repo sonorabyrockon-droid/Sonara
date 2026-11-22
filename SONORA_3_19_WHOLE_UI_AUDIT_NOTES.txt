@@ -1,0 +1,29 @@
+SONORA 3.19 — WHOLE UI AUDIT & FRONTEND FIXES
+
+Responsive fixes
+- Restored mobile Shuffle and Repeat controls that were hidden by an older media query.
+- Added a mobile Admin shortcut for verified administrator sessions.
+- Added bottom safe-area space for the phone player, bottom navigation and notifications.
+- Added queue-toggle accessibility state.
+- Kept frontend assets on version 3.19.0.
+
+Service-worker safety
+- Legacy cache cleanup now unregisters only the SONORA sw.js worker for this app path.
+- Unrelated service workers on the same origin are not unregistered.
+- Only cache names beginning with sonora-shell- are removed.
+
+Validation
+- node --check app.js and node --check sw.js passed.
+- HTML: no duplicate IDs, all local assets resolve, all buttons have an explicit type.
+- CSS parser: no syntax errors.
+- Route smoke tests: 10 routes at 9 viewport widths (320, 360, 390, 430, 768, 861, 1024, 1366, 1920); no horizontal overflow or JS page errors.
+- Layout checks also included 320x568, 667x375, tablet, laptop, desktop and wide desktop.
+- Mocked playback: repeat modes, audio loop, shuffle, speed, volume, queue and expanded player passed.
+- Mocked Admin: analytics/chart rendering and catalogue/activity Show More passed at phone, tablet and desktop sizes.
+- Chrome launcher popup layout and click action passed using a mock chrome.tabs API.
+
+Limitations
+- These tests use local browser simulations and mocked or empty backend services.
+- No live Supabase authentication, Cloudflare Worker, R2, production audio stream or hosted Realtime test was performed.
+- No physical iOS/Android device or operating-system lock-screen test was performed.
+- Worker, SQL, database schema, RLS policies, API handlers, secrets and deployment configuration are unchanged.

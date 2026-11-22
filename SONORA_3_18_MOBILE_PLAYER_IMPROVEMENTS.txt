@@ -1,0 +1,17 @@
+SONORA 3.18 — MOBILE PLAYER & PLAYBACK IMPROVEMENTS
+
+This update is frontend-only.
+
+Mobile playback improvements:
+- Shuffle and Repeat controls are now visible in the compact mobile player.
+- Tap the now-playing track area to open a full-screen player designed for phones.
+- Repeat cycles through Off, Repeat All and Repeat One. Repeat One uses the native audio loop flag.
+- Shuffle state is saved on this device and shared between compact and expanded player controls.
+- Queue view shows the active track and upcoming tracks; users can play a queued track or remove upcoming tracks.
+- Playback speed controls: 0.75x, 1x, 1.25x, 1.5x and 2x.
+- Expanded volume control, seek bar, elapsed/total time, like control and large skip/play buttons.
+- Media Session actions include play/pause, previous/next, seek forward/back and stop where supported by the browser.
+- Playback rate, volume, shuffle and repeat preferences persist locally.
+- Updated asset and service-worker cache version to 3.18.0.
+
+Limitations: Background playback and lock-screen control availability depend on the phone browser and operating system. Lyrics, offline downloads, cross-device synchronized queue, and gapless playback are not implemented by this frontend update. No server, Worker, SQL, database schema, RLS, API, or deployment configuration was changed.
