@@ -42,6 +42,7 @@ let preferenceDraft = { genres:[], moods:[] };
 let preferenceNameDraft = '';
 let autoplayDraft = store.get('sonora-autoplay-next', true);
 let adminOverview = null, adminLoadError = '', adminCatalogQuery = '';
+let adminCatalogVisible = 5, adminAuditVisible = 5;
 let livePresenceChannel = null, livePresenceReady = false, livePresenceStatus = 'CONNECTING', liveListenerSnapshot = [], liveTrackStartedAt = 0, liveTrackIdentity = '';
 const liveSessionKey = `sonora-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 let pendingPlaySeconds = 0, sessionPlayedSeconds = 0, currentPlayEventId = null, playEventCreating = false, playFinishRequested = false, lastPlaybackPosition = null, lastPlaybackTrackId = null, playFlushBusy = false;
@@ -530,12 +531,31 @@ function renderAdminOverview(data) {
   if (data.metrics?.metrics_note) health.innerHTML += `<p class="muted health-note">${esc(data.metrics.metrics_note)}</p>`;
   const catalogQuery = adminCatalogQuery.trim().toLowerCase();
   const catalogTracks = (data.tracks || []).filter(t => !catalogQuery || `${t.title||''} ${t.artist||''} ${t.album||''} ${t.genre||''}`.toLowerCase().includes(catalogQuery));
-  const catalogCount = $('adminCatalogCount'); if (catalogCount) catalogCount.textContent = `${catalogTracks.length} of ${(data.tracks||[]).length} shown`;
-  tracksEl.innerHTML = catalogTracks.length ? catalogTracks.map((t) => `<article class="admin-track">
+  const shownCatalogTracks = catalogTracks.slice(0, adminCatalogVisible);
+  const catalogCount = $('adminCatalogCount');
+  if (catalogCount) catalogCount.textContent = `Showing ${shownCatalogTracks.length} of ${catalogTracks.length} matches`;
+  tracksEl.innerHTML = catalogTracks.length ? shownCatalogTracks.map((t) => `<article class="admin-track">
     <div class="admin-track-info"><strong>${esc(t.title)}</strong><span>${esc(t.artist)} · ${esc(t.album || 'Single')} · ${esc(t.genre || 'Other')}</span><small>${esc(t.status)} · ${Number(t.file_size || 0).toLocaleString()} bytes · ${esc(t.audio_key || 'no R2 key')}</small></div>
     <div class="admin-track-actions"><button class="btn btn-glass btn-small" type="button" data-act="admin-edit" data-id="${esc(t.id)}">Edit</button><button class="btn btn-danger btn-small" type="button" data-act="admin-delete" data-id="${esc(t.id)}">Delete</button></div>
   </article>`).join('') : `<div class="empty"><strong>${catalogQuery?'No matching tracks':'No tracks in catalogue yet'}</strong>${catalogQuery?'Try another title, artist, album or genre.':'Upload your first licensed music file above.'}</div>`;
-  auditEl.innerHTML = data.audit?.length ? data.audit.map((a) => `<div class="audit-row"><strong>${esc(a.action)}</strong><span>${new Date(a.created_at).toLocaleString()}</span><small>${esc(JSON.stringify(a.details || {}))}</small></div>`).join('') : `<p class="muted">No administration activity recorded yet.</p>`;
+  if (catalogTracks.length > adminCatalogVisible) {
+    tracksEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>Showing ${shownCatalogTracks.length} of ${catalogTracks.length} loaded tracks</span><button class="btn btn-glass btn-small" type="button" data-act="admin-catalog-more">Show More Tracks · ${Math.min(10, catalogTracks.length-adminCatalogVisible)} more</button></div>`);
+  } else if (adminCatalogVisible > 5 && catalogTracks.length) {
+    tracksEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>All ${catalogTracks.length} loaded matching tracks are visible</span><button class="btn btn-glass btn-small" type="button" data-act="admin-catalog-less">Show Less</button></div>`);
+  } else if (catalogTracks.length) {
+    tracksEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>Showing all ${catalogTracks.length} loaded matching tracks</span></div>`);
+  }
+
+  const auditEntries = Array.isArray(data.audit) ? data.audit : [];
+  const shownAuditEntries = auditEntries.slice(0, adminAuditVisible);
+  auditEl.innerHTML = auditEntries.length ? shownAuditEntries.map((a) => `<div class="audit-row"><strong>${esc(a.action)}</strong><span>${new Date(a.created_at).toLocaleString()}</span><small>${esc(JSON.stringify(a.details || {}))}</small></div>`).join('') : `<p class="muted">No administration activity recorded yet.</p>`;
+  if (auditEntries.length > adminAuditVisible) {
+    auditEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>Showing ${shownAuditEntries.length} of ${auditEntries.length} loaded activity records</span><button class="btn btn-glass btn-small" type="button" data-act="admin-audit-more">Show More Activity · ${Math.min(8, auditEntries.length-adminAuditVisible)} more</button></div>`);
+  } else if (adminAuditVisible > 5 && auditEntries.length) {
+    auditEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>All ${auditEntries.length} activity records returned by the current overview are visible</span><button class="btn btn-glass btn-small" type="button" data-act="admin-audit-less">Show Less</button></div>`);
+  } else if (auditEntries.length) {
+    auditEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>Showing all ${auditEntries.length} activity records returned by the current overview</span></div>`);
+  }
   const status = $('adminStatus');
   if (status) { status.textContent = data.ok ? 'All critical services responding' : 'One or more services need attention'; status.className = `admin-status ${data.ok ? 'up' : 'down'}`; }
 }
@@ -1385,6 +1405,10 @@ $('view').addEventListener('click', (e) => {
       case 'theme-accent': applyTheme(themeMode, a.dataset.value, true); render(); break;
       case 'save-appearance': applyTheme(themeMode, themeAccent, true); saveUserPreferences(false, true); break;
       case 'admin-refresh': loadAdminDashboard(true); break;
+      case 'admin-catalog-more': adminCatalogVisible += 10; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'admin-catalog-less': adminCatalogVisible = 5; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'admin-audit-more': adminAuditVisible += 8; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'admin-audit-less': adminAuditVisible = 5; if (adminOverview) renderAdminOverview(adminOverview); break;
       case 'admin-delete': deleteAdminTrack(id); break;
       case 'admin-edit': editAdminTrack(id); break;
       case 'signout': signOutUser(); break;
@@ -1395,7 +1419,7 @@ $('view').addEventListener('click', (e) => {
   if (r) play(r.dataset.id, r.dataset.ctx);
 });
 $('view').addEventListener('input', (e) => {
-  if (e.target.id === 'adminCatalogSearch') { adminCatalogQuery = e.target.value; if (adminOverview) renderAdminOverview(adminOverview); const search=$('adminCatalogSearch'); if(search){search.focus();search.setSelectionRange(search.value.length,search.value.length);} }
+  if (e.target.id === 'adminCatalogSearch') { adminCatalogQuery = e.target.value; adminCatalogVisible = 5; if (adminOverview) renderAdminOverview(adminOverview); const search=$('adminCatalogSearch'); if(search){search.focus();search.setSelectionRange(search.value.length,search.value.length);} }
   if (e.target.id === 'prefDisplayName') preferenceNameDraft = e.target.value;
   if (e.target.id === 'autoplayNext') autoplayDraft = e.target.checked;
   if (e.target.id === 'settingsVolume') { const value=Math.max(0,Math.min(100,Number(e.target.value)||0)); $('vol').value=String(value); setVol(value); store.set('sonora-vol',value); const label=$('settingsVolumeValue'); if(label)label.textContent=`${value}%`; }
@@ -1521,7 +1545,7 @@ function newPasswordDialog() {
 
 
 // SONORA is delivered as a responsive website. Unregister older PWA workers so old installs do not keep forcing the cached app shell.
-if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(reg => reg.unregister())).catch(err => console.warn('Could not unregister old app worker:', err))); }
+if ('serviceWorker' in navigator) { window.addEventListener('load', async () => { try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(reg => reg.unregister())); if ('caches' in window) { const keys = await caches.keys(); await Promise.all(keys.filter(key => key.startsWith('sonora-shell-')).map(key => caches.delete(key))); } } catch (err) { console.warn('Could not clear an old SONORA app cache:', err); } }); }
 
 /* ---------- auth session orchestration + start ---------- */
 async function handleAuthSession(event, session) {

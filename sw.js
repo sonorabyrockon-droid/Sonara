@@ -1,6 +1,6 @@
-/* SONORA PWA shell cache. Audio streams and authenticated API data are never cached. */
-const CACHE = 'sonora-shell-v1';
-const SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest', './public/sonora-mark.svg'];
+/* SONORA shell cache. Versioned assets prevent a previous deployment from masking updated frontend code. */
+const CACHE = 'sonora-shell-v3-12-0';
+const SHELL = ['./', './index.html', './styles.css?v=3.12.0', './app.js?v=3.12.0', './config.js?v=3.12.0', './manifest.webmanifest', './public/sonora-mark.svg'];
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });
@@ -14,11 +14,16 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin || url.pathname.includes('/stream/')) return;
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then((response) => {
-      const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put('./index.html', copy)); return response;
+      if (response.ok) caches.open(CACHE).then((cache) => cache.put('./index.html', response.clone()));
+      return response;
     }).catch(() => caches.match('./index.html')));
     return;
   }
   if (SHELL.some((item) => new URL(item, self.registration.scope).href === url.href)) {
-    event.respondWith(caches.match(request).then((cached) => cached || fetch(request)));
+    /* Network-first for app assets: a newly deployed app wins; cache is offline fallback only. */
+    event.respondWith(fetch(request).then((response) => {
+      if (response.ok) caches.open(CACHE).then((cache) => cache.put(request, response.clone()));
+      return response;
+    }).catch(() => caches.match(request)));
   }
 });

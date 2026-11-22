@@ -1,0 +1,25 @@
+SONORA 3.12 — CACHE REFRESH + SHOW MORE VISIBILITY FIX
+
+WHAT CHANGED
+- Music Catalogue now initially displays 5 tracks and offers Show More Tracks when additional loaded catalogue rows are available. It reveals 10 more per click and offers Show Less after expansion.
+- Admin Activity now initially displays 5 records and offers Show More Activity when additional records from the current admin overview are available. It reveals up to 8 more per click and offers Show Less after expansion.
+- Catalogue search resets to the first 5 matches.
+- The UI states how many records are currently loaded, so it does not imply that records omitted by the API have been fetched.
+- Versioned stylesheet, config and app script URLs ensure browsers do not continue using stale unversioned assets.
+- Updated the existing client-side service-worker cache name and strategy; old SONORA shell caches are removed on app startup. The service worker uses network-first for app assets with cached fallback.
+- The frontend unregisters old service workers and clears old SONORA shell caches.
+
+WHY THE PREVIOUS FEATURE MAY HAVE LOOKED OLD
+- The previous app used unversioned app.js/styles.css URLs and an old cache-first shell cache. A browser could continue loading the older JavaScript even after the ZIP was replaced.
+- The earlier Show More threshold started at 10 catalogue rows and 8 activity rows. If fewer rows were returned, no Show More button appeared.
+
+DATA LIMIT
+- The existing admin overview returns at most 250 catalogue rows and 12 admin activity records. This frontend can expand only the records returned by that existing endpoint. Fetching older pages requires a backend/API pagination change, which is intentionally not included.
+
+SERVER BOUNDARY
+- No Cloudflare Worker source, SQL, database schema, API handler, or deployment configuration was changed.
+- Changed only app.js, index.html, sw.js, and this update note. Existing styles.css responsive footer styles are reused unchanged. This is a frontend/service-worker cache update.
+
+DEPLOYMENT
+- Extract the ZIP and deploy the CONTENTS of the sonora-github-ready folder to the website's published root (the same folder that currently contains index.html, app.js and styles.css). Do not upload only the ZIP file or place the folder one directory below the published root.
+- After deployment, hard-refresh once. The browser should load app.js?v=3.12.0 and styles.css?v=3.12.0.
