@@ -47,9 +47,10 @@ let livePresenceChannel = null, livePresenceReady = false, livePresenceStatus = 
 let livePresenceLastSyncedAt = 0, livePresenceLastPublishedAt = 0, livePresenceLastError = '', livePresenceReconnectTimer = null, livePresenceEpoch = 0, livePresenceHeartbeatTimer = null;
 let livePresenceSuppressed = false, signOutInProgress = false;
 const LIVE_PRESENCE_TOPIC = 'sonora-live-listeners';
-const LIVE_PRESENCE_VERSION = 2;
+const LIVE_PRESENCE_VERSION = 3;
 const LIVE_PRESENCE_STALE_MS = 120000;
 const liveSessionKey = `sonora-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+const liveSessionStartedAt = Date.now();
 let pendingPlaySeconds = 0, sessionPlayedSeconds = 0, currentPlayEventId = null, playEventCreating = false, playFinishRequested = false, lastPlaybackPosition = null, lastPlaybackTrackId = null, playFlushBusy = false;
 let tracks = [];
 let liked = new Set(oldLikes);
@@ -382,14 +383,15 @@ function readLivePresenceSnapshot() {
       const prior = unique.get(key);
       if (!prior || presenceTimestamp(meta.updated_at) >= presenceTimestamp(prior.updated_at)) unique.set(key, meta);
     });
-    livePresenceAllSnapshot = [...unique.values()];
     const now = Date.now();
-    liveListenerSnapshot = livePresenceAllSnapshot.filter(meta => {
+    livePresenceAllSnapshot = [...unique.values()].filter(meta => {
       const updated = presenceTimestamp(meta.updated_at);
-      const fresh = !updated || now - updated <= LIVE_PRESENCE_STALE_MS;
+      return !updated || now - updated <= LIVE_PRESENCE_STALE_MS;
+    });
+    liveListenerSnapshot = livePresenceAllSnapshot.filter(meta => {
       const stateValue = meta.is_listening ?? meta.is_playing ?? meta.playing;
       const listening = stateValue === true || String(stateValue).toLowerCase() === 'true' || stateValue == null;
-      return fresh && listening && Boolean(meta.title || meta.track_id);
+      return listening && Boolean(meta.title || meta.track_id);
     }).map(meta => ({
       ...meta,
       track_id: meta.track_id || meta.trackId || `${meta.title || 'Unknown track'}|${meta.artist || 'Unknown artist'}`,
@@ -419,9 +421,26 @@ function presenceDisplayName(listener, index = 0) {
   // Do not surface an email address in the public presence payload or admin list.
   return name && !name.includes('@') ? name : 'Member';
 }
+function presenceIsPlaying(listener) {
+  const state = listener?.is_listening ?? listener?.is_playing ?? listener?.playing;
+  return (state === true || String(state).toLowerCase() === 'true') && Boolean(listener?.title || listener?.track_id);
+}
+function presenceSessionId(listener) {
+  return String(listener?.session_id || listener?.session_key || listener?.phx_ref || '');
+}
+function connectedPresenceRows() {
+  let guestIndex = 0;
+  return livePresenceAllSnapshot.map(listener => {
+    const guest = String(listener.listener_type || 'Guest').toLowerCase() === 'guest';
+    const displayName = presenceDisplayName(listener, guest ? guestIndex++ : 0);
+    const playing = presenceIsPlaying(listener);
+    const started = presenceTimestamp(listener.started_at || listener.session_started_at);
+    return { ...listener, display_name: displayName, is_active: playing, session_elapsed: started ? Math.max(0, Math.floor((Date.now() - started) / 1000)) : null };
+  }).sort((a, b) => Number(b.is_active) - Number(a.is_active));
+}
 function renderLivePresence() {
   readLivePresenceSnapshot();
-  const status = $('adminLiveStatus'), metric = $('adminLiveMetric'), note = $('adminLiveMetricNote'), target = $('adminLiveTracks');
+  const status = $('adminLiveStatus'), metric = $('adminLiveMetric'), note = $('adminLiveMetricNote'), target = $('adminLiveTracks'), peopleTarget = $('adminLiveUsers');
   if (status) {
     const online = livePresenceReady;
     status.textContent = online ? 'LIVE' : (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(livePresenceStatus) ? 'OFFLINE' : livePresenceStatus === 'CONNECTING' ? 'CONNECTING' : 'WAITING');
@@ -437,10 +456,23 @@ function renderLivePresence() {
   const insightStatus = $('insightLiveStatus'), insightCount = $('insightListenerCount'), insightUsers = $('insightLiveUsers');
   if (insightStatus) { insightStatus.textContent = livePresenceReady ? 'LIVE' : livePresenceStatus; insightStatus.className = `storage-pill ${livePresenceReady ? 'live-pill' : ''}`; }
   if (insightCount) insightCount.textContent = count == null ? '—' : count.toLocaleString();
+  const connectedRows = connectedPresenceRows();
+  const renderConnectedUser = (listener) => {
+    const isGuest = String(listener.listener_type || 'Guest').toLowerCase() === 'guest';
+    const description = listener.is_active
+      ? `${esc(listener.title || 'Unknown track')} — ${esc(listener.artist || 'Unknown artist')}${listener.started_at ? ` · ${Math.max(0, Math.floor((Date.now() - presenceTimestamp(listener.started_at)) / 60000))} min on track` : ''}`
+      : 'Online · not playing right now';
+    return `<div class="audience-user-row"><span class="audience-avatar">${esc(listener.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${esc(listener.display_name)}</strong><small>${esc(listener.listener_type || (isGuest ? 'Guest' : 'Signed in'))} · ${description}</small></span><b class="presence-state-pill ${listener.is_active ? 'is-playing' : 'is-online'}">${listener.is_active ? 'LISTENING' : 'ONLINE'}</b></div>`;
+  };
   if (insightUsers) {
     if (count == null) insightUsers.innerHTML = `<div class="chart-empty">Live presence is ${esc(livePresenceStatus.toLowerCase())}. ${esc(livePresenceLastError || 'Waiting for the Realtime subscription.')}</div>`;
-    else if (!liveListenerSnapshot.length) insightUsers.innerHTML = `<div class="chart-empty">${livePresenceAllSnapshot.length ? `${livePresenceAllSnapshot.length} browser session${livePresenceAllSnapshot.length === 1 ? ' is' : 's are'} connected, but none is currently playing.` : 'No other listening sessions are connected right now.'}</div>`;
-    else insightUsers.innerHTML = liveListenerSnapshot.map((listener, index) => `<div class="audience-user-row"><span class="audience-avatar">${esc(presenceDisplayName(listener, index).slice(0, 1).toUpperCase())}</span><span><strong>${esc(presenceDisplayName(listener, index))}</strong><small>${esc(listener.listener_type || 'Guest')} · ${esc(listener.title || 'Unknown track')} — ${esc(listener.artist || 'Unknown artist')}${listener.started_at ? ` · ${Math.max(0, Math.floor((Date.now() - presenceTimestamp(listener.started_at)) / 60000))} min on track` : ''}</small></span><b class="audience-playing">PLAYING</b></div>`).join('');
+    else if (!connectedRows.length) insightUsers.innerHTML = '<div class="chart-empty">No connected listening sessions right now. Signed-in members and guests will appear here while SONORA is open.</div>';
+    else insightUsers.innerHTML = connectedRows.slice(0, 40).map(renderConnectedUser).join('');
+  }
+  if (peopleTarget) {
+    if (count == null) peopleTarget.innerHTML = `<div class="chart-empty">Realtime is ${esc(String(livePresenceStatus).toLowerCase().replaceAll('_', ' '))}. ${esc(livePresenceLastError || 'Waiting for the presence subscription.')}</div>`;
+    else if (!connectedRows.length) peopleTarget.innerHTML = '<div class="chart-empty">No connected users yet. Other browsers appear here once they open SONORA.</div>';
+    else peopleTarget.innerHTML = connectedRows.slice(0, 40).map(renderConnectedUser).join('');
   }
   renderIntelligenceLiveBlocks();
   if (!target) return;
@@ -484,8 +516,9 @@ async function publishLivePresence() {
   if (!playing) { liveTrackIdentity = ''; liveTrackStartedAt = 0; }
   const payload = {
     presence_version: LIVE_PRESENCE_VERSION,
-    app_version: '3.14.0',
+    app_version: '3.16.0',
     session_id: liveSessionKey,
+    session_started_at: liveSessionStartedAt,
     listener_name: currentListenerName(),
     listener_type: user ? 'Signed in' : 'Guest',
     is_listening: playing,
@@ -1129,7 +1162,7 @@ const views = {
       <div class="admin-heading"><div><div class="kicker">SONORA CONTROL ROOM</div><h1>Admin dashboard</h1><p class="lede">Upload and manage music, monitor Supabase and Cloudflare service health, and inspect administrative activity.</p></div><div class="admin-heading-actions"><a class="btn btn-glass" href="#/diagnostics">${ic('activity')}Music & Audience Intelligence</a><button class="btn btn-glass" type="button" data-act="admin-refresh">${ic('activity')}Refresh status</button></div></div>
       <div class="admin-welcome glass"><div><strong>Administrator verified</strong><span>${esc(user?.email || '')}</span></div><span class="admin-status" id="adminStatus">Loading service health…</span></div>
       <div class="r2-storage-estimate glass" id="adminStorageEstimate"><b>Cloudflare R2 storage estimate</b><span>Loading bucket usage…</span></div>
-      <section class="admin-section glass live-listening-section"><div class="section-top"><div><h2>Now playing across SONORA</h2><p>Live listening sessions from connected browsers. Other listeners must refresh to load the current frontend and actively play a track to appear.</p><div class="live-listener-kpi"><strong id="adminLiveMetric">—</strong><span id="adminLiveMetricNote">Waiting for Realtime presence</span></div></div><span class="storage-pill" id="adminLiveStatus">CONNECTING</span></div><small class="live-presence-diagnostic" id="adminLiveDiagnostics">Waiting for Realtime diagnostics…</small><div class="admin-live-tracks" id="adminLiveTracks"><div class="chart-empty">Connecting to live listening presence…</div></div></section>
+      <section class="admin-section glass live-listening-section"><div class="section-top"><div><h2>Live audience across SONORA</h2><p>Connected browsers appear in the people list; active playback is shown separately in Now Playing.</p><div class="live-listener-kpi"><strong id="adminLiveMetric">—</strong><span id="adminLiveMetricNote">Waiting for Realtime presence</span></div></div><span class="storage-pill" id="adminLiveStatus">CONNECTING</span></div><small class="live-presence-diagnostic" id="adminLiveDiagnostics">Waiting for Realtime diagnostics…</small><div class="admin-live-grid"><div class="admin-live-column"><div class="admin-live-subhead"><strong>Now Playing</strong><small>Tracks with active playback</small></div><div class="admin-live-tracks" id="adminLiveTracks"><div class="chart-empty">Connecting to live listening presence…</div></div></div><div class="admin-live-column"><div class="admin-live-subhead"><strong>Connected users</strong><small>Signed-in members and guests · listening or idle</small></div><div class="admin-live-users" id="adminLiveUsers"><div class="chart-empty">Waiting for connected sessions…</div></div></div></div></section>
       <section class="admin-section glass analytics-section"><div class="section-top"><div><h2>Platform intelligence</h2><p>Catalogue mix, weekly upload momentum, listener engagement, storage and service response times.</p></div><span class="storage-pill">LIVE SNAPSHOT</span></div><div class="admin-analytics-grid" id="adminAnalytics"><div class="chart-card glass">Loading analytics…</div></div><div class="admin-insights" id="adminInsights"></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Service health & performance</h2><p>Live probes for authentication, database access, Cloudflare Worker and private R2 storage.</p></div></div><div class="admin-health" id="adminHealth"><p class="muted">Checking services…</p></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Deep diagnostics</h2><p>Read-only checks against the core Supabase tables and a sample R2 object. Refresh to re-run.</p></div></div><div class="admin-deep-grid" id="adminDeepDiagnostics"><p class="muted">Waiting for diagnostic results…</p></div><p class="muted health-note" id="adminCloudflareLimits"></p></section>
@@ -1416,28 +1449,37 @@ function renderIntelligenceLiveBlocks() {
   if(headerLiveBadge){headerLiveBadge.textContent=livePresenceReady?'LIVE AUDIENCE':`AUDIENCE ${String(livePresenceStatus||'WAITING').replaceAll('_',' ')}`;headerLiveBadge.classList.toggle('offline',!livePresenceReady);}
   if(countNode)countNode.textContent=count==null?'—':count.toLocaleString();
   if(statusNode){statusNode.textContent=livePresenceReady?'LIVE':livePresenceStatus;statusNode.className=`storage-pill ${livePresenceReady?'live-pill':''}`;}
-  let guestNumber=0;
-  const users=liveListenerSnapshot.map(listener=>{
-    const started=Number(listener.started_at)||0;
+
+  let guestIndex=0;
+  const connected=livePresenceAllSnapshot.map(listener=>{
+    const guest=String(listener.listener_type||'Guest').toLowerCase()==='guest';
+    const started=presenceTimestamp(listener.started_at || listener.session_started_at);
     const elapsed=started?Math.max(0,Math.floor((Date.now()-started)/1000)):0;
-    const guestIndex=String(listener.listener_type||'Guest').toLowerCase()==='guest'?guestNumber++:0;
-    return {...listener,display_name:liveListenerLabel(listener,guestIndex),elapsed};
-  }).sort((a,b)=>b.elapsed-a.elapsed);
+    const display_name=liveListenerLabel(listener,guest?guestIndex++:0);
+    const is_active=presenceIsPlaying(listener) && liveListenerSnapshot.some(active=>presenceSessionId(active)===presenceSessionId(listener));
+    return {...listener,display_name,elapsed,is_active};
+  }).sort((a,b)=>Number(b.is_active)-Number(a.is_active));
+  const activeUsers=connected.filter(x=>x.is_active);
   if(usersNode){
-    if(!livePresenceReady) usersNode.innerHTML=`<div class="intel-empty-state"><strong>Live presence is ${esc(livePresenceStatus.toLowerCase())}</strong><span>Active listening sessions will appear after the existing Realtime channel connects.</span></div>`;
-    else if(!users.length) usersNode.innerHTML='<div class="intel-empty-state"><strong>No active listeners right now</strong><span>When someone plays a song, their session and track will appear here.</span></div>';
-    else usersNode.innerHTML=users.slice(0,12).map(listener=>{const guest=String(listener.listener_type||'Guest').toLowerCase()==='guest';return `<article class="intel-user-row"><span class="intel-avatar">${esc(listener.display_name.slice(0,1).toUpperCase())}</span><span class="intel-user-main"><strong>${esc(listener.display_name)}</strong><small>${esc(listener.listener_type||'Guest')} · ${esc(listener.title||'Unknown track')} — ${esc(listener.artist||'Unknown artist')}${guest?' · IP not exposed':''}</small></span><span class="intel-user-duration"><b>${readableListenTime(listener.elapsed)}</b><small>ON TRACK</small></span><i class="intel-playing-dot" aria-label="Playing"></i></article>`;}).join('');
+    if(!livePresenceReady) usersNode.innerHTML=`<div class="intel-empty-state"><strong>Live presence is ${esc(livePresenceStatus.toLowerCase())}</strong><span>Connected users will appear after the Realtime subscription completes.</span></div>`;
+    else if(!connected.length) usersNode.innerHTML='<div class="intel-empty-state"><strong>No connected users right now</strong><span>Signed-in members and guests appear here while SONORA is open in their browser.</span></div>';
+    else usersNode.innerHTML=connected.slice(0,40).map(listener=>{
+      const guest=String(listener.listener_type||'Guest').toLowerCase()==='guest';
+      const detail=listener.is_active?`${esc(listener.title||'Unknown track')} — ${esc(listener.artist||'Unknown artist')}`:'Online · not playing right now';
+      const status=listener.is_active?'LISTENING':'ONLINE';
+      return `<article class="intel-user-row"><span class="intel-avatar">${esc(listener.display_name.slice(0,1).toUpperCase())}</span><span class="intel-user-main"><strong>${esc(listener.display_name)}</strong><small>${esc(listener.listener_type||(guest?'Guest':'Signed in'))} · ${detail}${guest?' · IP not exposed':''}</small></span><span class="intel-user-duration"><b>${listener.is_active?readableListenTime(listener.elapsed):'Online'}</b><small>${listener.is_active?'SESSION':'CONNECTED'}</small></span><i class="intel-playing-dot ${listener.is_active?'is-playing':'is-online'}" aria-label="${status}"></i></article>`;
+    }).join('');
   }
-  const signed=users.filter(x=>String(x.listener_type||'').toLowerCase()!=='guest').length;
-  const guests=users.length-signed;
+  const signed=activeUsers.filter(x=>String(x.listener_type||'').toLowerCase()!=='guest').length;
+  const guests=activeUsers.length-signed;
   const audienceMix=$('intelAudienceMix');
-  if(audienceMix) audienceMix.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for Realtime presence.</div>':!users.length?'<div class="chart-empty">No active listeners to segment yet.</div>':svgDonutChart([{name:'Signed in',value:signed},{name:'Guests',value:guests}],'name','value','users');
+  if(audienceMix) audienceMix.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for Realtime presence.</div>':!activeUsers.length?'<div class="chart-empty">No active listeners to segment yet.</div>':svgDonutChart([{name:'Signed in',value:signed},{name:'Guests',value:guests}],'name','value','users');
   const bands=[{name:'0–5 min',value:0},{name:'5–15 min',value:0},{name:'15–30 min',value:0},{name:'30+ min',value:0}];
-  users.forEach(x=>{const mins=x.elapsed/60;const index=mins<5?0:mins<15?1:mins<30?2:3;bands[index].value++;});
+  activeUsers.forEach(x=>{const mins=x.elapsed/60;const index=mins<5?0:mins<15?1:mins<30?2:3;bands[index].value++;});
   const sessionBands=$('intelSessionBands');
-  if(sessionBands)sessionBands.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for live sessions.</div>':users.length?svgBarChart(bands,'name','value','chart-bar-engagement'):'<div class="chart-empty">No current sessions to analyse.</div>';
+  if(sessionBands)sessionBands.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for live sessions.</div>':activeUsers.length?svgBarChart(bands,'name','value','chart-bar-engagement'):'<div class="chart-empty">No current listening sessions to analyse.</div>';
   const grouped=new Map();
-  users.forEach(listener=>{const id=String(listener.track_id||`${listener.title}|${listener.artist}`);if(!grouped.has(id))grouped.set(id,{name:listener.title||'Unknown track',artist:listener.artist||'Unknown artist',value:0});grouped.get(id).value++;});
+  activeUsers.forEach(listener=>{const id=String(listener.track_id||`${listener.title}|${listener.artist}`);if(!grouped.has(id))grouped.set(id,{name:listener.title||'Unknown track',artist:listener.artist||'Unknown artist',value:0});grouped.get(id).value++;});
   const liveTracks=[...grouped.values()].sort((a,b)=>b.value-a.value);
   const tracksNode=$('intelLiveTrackChart');
   if(tracksNode)tracksNode.innerHTML=!livePresenceReady?'<div class="chart-empty">Live track data is unavailable until presence connects.</div>':liveTracks.length?svgBarChart(liveTracks.slice(0,7).map(x=>({name:`${x.name} · ${x.artist}`,value:x.value})),'name','value','chart-bar-engagement'):'<div class="chart-empty">Nothing is playing right now.</div>';
@@ -1447,7 +1489,7 @@ function renderIntelligenceLiveBlocks() {
     else if(!liveTracks.length)listeningNow.innerHTML='<div class="intel-empty-state"><strong>Nothing is playing</strong><span>Currently playing music will be shown here.</span></div>';
     else listeningNow.innerHTML=liveTracks.slice(0,4).map(track=>`<div class="intel-now-track"><span class="intel-now-eq"><i></i><i></i><i></i></span><span><strong>${esc(track.name)}</strong><small>${esc(track.artist)}</small></span><b>${track.value} ${track.value===1?'listener':'listeners'}</b></div>`).join('');
   }
-  const liveUpdated=$('intelLiveUpdated');if(liveUpdated)liveUpdated.textContent=`Presence ${livePresenceReady?'connected':'not connected'} · refreshed ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+  const liveUpdated=$('intelLiveUpdated');if(liveUpdated)liveUpdated.textContent=`${connected.length} connected · ${activeUsers.length} listening · refreshed ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
 }
 function renderIntelligenceDashboard(data) {
   const target=$('insightAnalytics');
@@ -1488,10 +1530,10 @@ function renderIntelligenceDashboard(data) {
       <article class="intel-panel intel-live-panel">
         <div class="intel-panel-head"><div><span class="intel-eyebrow">REALTIME AUDIENCE</span><h2>Live listening room</h2><p>Active playback across connected browsers. Listener browsers must use the current frontend build.</p></div><span id="insightLiveStatus" class="storage-pill">CONNECTING</span></div>
         <div class="intel-live-main"><div class="intel-live-count"><strong id="insightListenerCount">—</strong><span>active listeners</span><small id="intelLiveUpdated">Waiting for live presence</small><small class="live-presence-diagnostic" id="intelLiveDiagnostics">Waiting for Realtime diagnostics…</small></div><div id="intelCurrentlyPlaying" class="intel-playing-list"><div class="chart-empty">Waiting for active tracks…</div></div></div>
-        <div class="intel-user-head"><strong>Live listeners</strong><span>Display name · track · time on current track</span></div>
+        <div class="intel-user-head"><strong>Connected users</strong><span>All connected sessions · Listening or Online status</span></div>
         <div id="insightLiveUsers" class="intel-user-list"><div class="chart-empty">Waiting for live presence…</div></div>
       </article>
-      <article class="intel-panel intel-audience-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">AUDIENCE COMPOSITION</span><h2>Who is listening</h2><p>Signed-in accounts versus guest sessions.</p></div></div><div id="intelAudienceMix" class="intel-chart-visual"><div class="chart-empty">Waiting for live presence…</div></div><div class="intel-subchart"><h3>Time on current track</h3><div id="intelSessionBands"><div class="chart-empty">Waiting for sessions…</div></div></div></article>
+      <article class="intel-panel intel-audience-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">AUDIENCE COMPOSITION</span><h2>Live audience mix</h2><p>Signed-in versus guest sessions currently playing.</p></div></div><div id="intelAudienceMix" class="intel-chart-visual"><div class="chart-empty">Waiting for live presence…</div></div><div class="intel-subchart"><h3>Time on current track</h3><div id="intelSessionBands"><div class="chart-empty">Waiting for sessions…</div></div></div></article>
     </section>
     <div class="intel-chart-grid">
       <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">MUSIC CATALOGUE</span><h2>Genre distribution</h2><p>How published and listed tracks are distributed by genre.</p></div></div>${svgDonutChart(genres.slice(0,7),'name','value','tracks')}${genres.length>7?`<details class="intel-more"><summary>Show ${genres.length-7} more genres</summary>${svgBarChart(genres.slice(7),'name','value','chart-bar-engagement')}</details>`:''}</article>

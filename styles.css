@@ -651,3 +651,16 @@ dialog::backdrop{background:rgba(8,5,20,.5);backdrop-filter:blur(6px)}
 /* v3.13 live-presence diagnostics */
 .live-presence-diagnostic{display:block;padding:0 18px 12px;color:var(--muted);font-size:11px;line-height:1.45;overflow-wrap:anywhere}
 .live-listener-kpi span{max-width:min(62vw,520px);line-height:1.4}
+
+
+/* SONORA 3.16 — connected audience and active playback are shown separately */
+.admin-live-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:14px}
+.admin-live-column{min-width:0;padding:12px;border:1px solid var(--stroke);border-radius:14px;background:var(--glass2)}
+.admin-live-subhead{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 10px}
+.admin-live-subhead strong{font-size:12px}.admin-live-subhead small{color:var(--muted);font-size:10px;text-align:right}
+.admin-live-users{display:grid;gap:7px;max-height:360px;overflow:auto}
+.presence-state-pill{margin-left:auto;flex:none;font-size:9px;font-weight:850;letter-spacing:.06em;padding:5px 7px;border-radius:999px}
+.presence-state-pill.is-playing{color:#39c995;background:rgba(57,201,149,.13)}
+.presence-state-pill.is-online{color:var(--muted);background:var(--field)}
+.intel-playing-dot.is-online{background:var(--muted);box-shadow:none}
+@media(max-width:760px){.admin-live-grid{grid-template-columns:1fr}.admin-live-subhead{align-items:flex-start;flex-direction:column}.admin-live-subhead small{text-align:left}}

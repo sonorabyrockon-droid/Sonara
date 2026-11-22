@@ -1,0 +1,24 @@
+SONORA 3.16 — CONNECTED AUDIENCE VISIBILITY (FRONTEND ONLY)
+
+What changed
+- Admin Dashboard now shows connected users independently from active Now Playing tracks.
+- Music & Audience Intelligence lists all fresh connected presence sessions, including idle/paused browsers.
+- Each row shows Listening or Online status; active track metadata is only shown for active playback.
+- Active listener KPI and track charts remain restricted to currently playing sessions.
+- Presence snapshot removes stale entries after the 120-second freshness window.
+- Presence payload version and browser app_version updated to 3.16.0; session_started_at is published.
+- Frontend cache-busting version updated to 3.16.0.
+
+Database findings from the supplied audit
+- `sonora_admin_audit.details` exists; no schema mismatch.
+- `sonora_admin_play_stats()` returns only global event/seconds totals.
+- `sonora_play_events` RLS intentionally limits authenticated users to their own events.
+- Live presence is a Supabase Realtime public channel in this frontend; daily realtime.messages partitions/publications are not the presence channel.
+
+Limitations
+- Presence data is still on a public Realtime channel because no SQL/Worker/settings changes were made. Display names and current track metadata sent in this presence payload may be visible to anyone who can subscribe with the project public key.
+- Secure admin-only live presence requires private-channel authorization policies and an aligned frontend channel configuration.
+- Historical per-user analytics requires a server-side admin endpoint or narrowly scoped function; this frontend-only update does not add it.
+
+Files changed: app.js, styles.css, index.html, sw.js, this note.
+No Cloudflare Worker, SQL, database schema, API secrets, or deployment configuration changed.
