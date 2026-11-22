@@ -223,3 +223,7 @@ Run `sql/sonora-3-20-music-description.sql` in Supabase SQL Editor before deploy
 5. Upload a small batch containing valid tracks, a duplicate, and an unsupported file. Confirm valid tracks publish once, duplicates are rejected, unsupported files are skipped, and the final catalogue refreshes once.
 
 Live Supabase/R2 deployment testing still requires deploying this package to the configured services; local source checks do not prove production behavior.
+
+
+## SONORA 3.22
+See `SONORA_3_22_FEATURES_NOTES.txt`. Run `sql/sonora-3-22-listening-sync.sql` once; redeploy the Worker (adds `POST /admin/album-cover`).

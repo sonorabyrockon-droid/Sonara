@@ -169,3 +169,25 @@ test('the hourly ceiling still applies when UPLOADS_PER_HOUR is set', async () =
     assert.match((await response.json()).error,/maximum 3 tracks per hour/);
   } finally { globalThis.fetch=originalFetch; }
 });
+
+test('album cover route applies one cover to many tracks', async () => {
+  let patched=null, filter='';
+  const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222'];
+  globalThis.fetch=async (input, init={}) => {
+    const url=new URL(input);
+    const auth=authResponse(url); if(auth)return auth;
+    if (url.pathname.endsWith('/rest/v1/tracks') && init.method==='PATCH') { patched=JSON.parse(init.body); filter=url.searchParams.get('id'); return jsonResponse(ids.map(id=>({id}))); }
+    if (url.pathname.endsWith('/rest/v1/sonora_admin_audit')) return jsonResponse([]);
+    throw new Error(`Unexpected fetch in test: ${init.method||'GET'} ${url}`);
+  };
+  try {
+    const post=(body)=>new Request('https://worker.example.test/admin/album-cover',{method:'POST',headers:{Authorization:'Bearer t','Content-Type':'application/json',Origin:'https://sonora.example.test'},body:JSON.stringify(body)});
+    const ok=await worker.fetch(post({track_ids:ids,cover_url:'https://cdn.example.test/c.jpg'}),env);
+    assert.equal(ok.status,200); assert.equal((await ok.json()).updated,2);
+    assert.equal(patched.cover_url,'https://cdn.example.test/c.jpg'); assert.equal(filter,`in.(${ids.join(',')})`);
+    const bad=await worker.fetch(post({track_ids:['not-a-uuid'],cover_url:'https://x.test/c.jpg'}),env);
+    assert.equal(bad.status,400);
+    const badUrl=await worker.fetch(post({track_ids:ids,cover_url:'javascript:alert(1)'}),env);
+    assert.equal(badUrl.status,400);
+  } finally { globalThis.fetch=originalFetch; }
+});

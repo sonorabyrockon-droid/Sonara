@@ -21,7 +21,7 @@
  * Required Worker secret:
  *   SUPABASE_SECRET_KEY (sb_secret_...; never put in GitHub or the browser)
  */
-const VERSION = '3.21.0';
+const VERSION = '3.22.0';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_TRACKS_RETURNED = 250;
 // Safety ceiling only. The old limit of 12 blocked normal batch uploads (and counted failed attempts).
@@ -493,6 +493,22 @@ async function adminRoute(request, env, url) {
     }
   }
 
+  if (url.pathname === '/admin/album-cover' && request.method === 'POST') {
+    let body; try { body = await request.json(); } catch { return json({ error: 'Send valid JSON.' }, 400); }
+    const ids = Array.isArray(body.track_ids) ? [...new Set(body.track_ids.map(String))] : [];
+    const coverUrl = cleanString(body.cover_url || '', 1000);
+    if (!ids.length || ids.length > 500 || !ids.every((x) => /^[0-9a-f-]{36}$/i.test(x))) return json({ error: 'Provide 1–500 valid track ids.' }, 400);
+    if (!/^https?:\/\//i.test(coverUrl)) return json({ error: 'Provide a valid http(s) cover URL.' }, 400);
+    const response = await supabaseRest(env, `tracks?id=in.(${ids.join(',')})&select=id`, {
+      method: 'PATCH', headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ cover_url: coverUrl, updated_at: new Date().toISOString() })
+    });
+    if (!response.ok) return json({ error: (await response.text()).slice(0, 300) }, 500);
+    const rows = await response.json();
+    await writeAudit(env, user, 'album.cover', { updated: rows.length, cover_url: coverUrl });
+    return json({ ok: true, updated: rows.length, cover_url: coverUrl });
+  }
+
   const match = url.pathname.match(/^\/admin\/tracks\/([0-9a-f-]{36})$/i);
   if (match && request.method === 'PATCH') {
     const id = match[1];
@@ -562,7 +578,7 @@ export default {
         service: 'sonora-stream',
         version: VERSION,
         status: 'online',
-        routes: ['/health', '/admin/me', '/admin/overview', '/admin/cover', '/admin/upload', '/admin/tracks/:id'],
+        routes: ['/health', '/admin/me', '/admin/overview', '/admin/cover', '/admin/album-cover', '/admin/upload', '/admin/tracks/:id'],
         note: 'This service streams music through /stream/<audio_key>. The root URL is a status page, not a music player.'
       });
     } else if (url.pathname === '/health' && (request.method === 'GET' || request.method === 'HEAD')) {

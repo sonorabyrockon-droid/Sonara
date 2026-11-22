@@ -147,7 +147,7 @@ function row(t, i, ctx, opts = {}) {
   return `<div class="row${on ? ' active' : ''}${on && !audio.paused ? ' playing' : ''}" tabindex="0" data-id="${esc(t.id)}" data-ctx="${esc(ctx)}" aria-label="Play ${esc(t.title)} by ${esc(t.artist)}">
     <div class="num"><span>${i + 1}</span><div class="eq" aria-hidden="true"><i></i><i></i><i></i></div></div>
     ${cover(t)}
-    <div style="min-width:0"><span class="name">${esc(t.title)}</span><span class="by">${esc(t.artist)}</span></div>
+    <div style="min-width:0"><span class="name">${esc(t.title)}</span><span class="by artist-link" role="link" tabindex="0" data-act="open-artist" data-artist="${esc(artistKey(t.artist))}">${esc(t.artist)}</span></div>
     <span class="alb">${esc(t.album)}</span><span class="dur">${t.duration ? fmt(t.duration) : ''}</span>
     ${queueAct}${act}
     <button class="icon-btn like${lk ? ' on' : ''}" data-act="like" aria-pressed="${lk}" aria-label="${lk ? 'Unlike' : 'Like'} ${esc(t.title)}">${ic(lk ? 'heart-fill' : 'heart')}</button></div>`;
@@ -207,18 +207,45 @@ function recordRecent(id) {
   store.set(recentKey(), [id, ...recentIds().filter((x) => x !== id)].slice(0, RECENT_MAX));
   refreshRecentSection();
 }
+const clearedKey = () => `sonora-recent-cleared:${user?.id || 'guest'}`;
+let pendingSeek = 0, lastResumeSave = 0, sleepTimeout = null, sleepAtEnd = false;
+const getResume = () => { const r = store.get('sonora-resume', null); return r && r.id && Number(r.t) >= 5 ? r : null; };
+function saveResume(force = false) {
+  if (!active?.id || !audio.src) return;
+  const now = Date.now(); if (!force && now - lastResumeSave < 4000) return; lastResumeSave = now;
+  const t = audio.currentTime, d = Number(audio.duration) || active.duration || 0;
+  if (d && t > d - 8) { store.set('sonora-resume', null); return; }
+  if (t >= 5) store.set('sonora-resume', { id:active.id, t:Math.floor(t) });
+}
+function resumeCard() {
+  const r = getResume(); const t = r && byId(r.id); if (!t) return '';
+  if (active?.id === t.id && !audio.paused) return '';
+  return `<section class="resume-card glass" aria-label="Continue listening">${cover(t)}<div class="resume-copy"><small>Continue listening</small><strong>${esc(t.title)}</strong><small>${esc(t.artist)} · resume at ${fmt(r.t)}</small></div><button type="button" class="btn btn-primary" data-act="resume">${ic('play')}Resume</button></section>`;
+}
 function recentSection() {
   const list = recentTracks().slice(0, 8);
-  if (!list.length) return '';
-  return `<div class="sec-head"><div><h2>Recently played</h2><p>Pick up where you left off.</p></div><button type="button" class="link" data-act="clear-recent">Clear</button></div>
-      <div class="grid">${list.map((t) => card(t, 'recent')).join('')}</div>`;
+  return resumeCard() + (list.length ? `<div class="sec-head"><div><h2>Recently played</h2><p>Pick up where you left off.</p></div><button type="button" class="link" data-act="clear-recent">Clear</button></div>
+      <div class="grid">${list.map((t) => card(t, 'recent')).join('')}</div>` : '');
+}
+async function syncRemoteRecent() {
+  if (!sb || !user?.id) return;
+  try {
+    let q = sb.from('sonora_play_events').select('track_id,created_at').eq('user_id', user.id).gte('played_seconds', 5).order('created_at', { ascending:false }).limit(80);
+    const cleared = store.get(clearedKey(), ''); if (cleared) q = q.gt('created_at', cleared);
+    const { data, error } = await q; if (error) throw error;
+    const merged = [...new Set([...(data || []).map((r) => r.track_id), ...recentIds()])].slice(0, RECENT_MAX);
+    store.set(recentKey(), merged); refreshRecentSection();
+  } catch (error) { console.warn('SONORA synced history unavailable (run sql/sonora-3-22-listening-sync.sql):', error?.message || error); }
 }
 function refreshRecentSection() {
   const host = $('recentListening'); if (!host || route().name !== 'home') return;
   host.innerHTML = recentSection();
 }
+const artistKey = (name) => albumKey(name);
+const artistTracks = (key) => tracks.filter((t) => artistKey(t.artist) === albumKey(key));
 const ctxList = (ctx) => {
   if (ctx === 'recent') return recentTracks();
+  if (ctx.startsWith('artist:')) return artistTracks(ctx.slice(7));
   if (ctx === 'liked') return tracks.filter((t) => liked.has(t.id));
   if (ctx === 'search') return filtered();
   if (ctx.startsWith('pl:')) return (playlistById(ctx.slice(3))?.ids || []).map(byId).filter(Boolean);
@@ -1187,6 +1214,26 @@ async function deleteAdminTrack(id) {
     await loadCatalogue({renderAfter:false}); await loadAdminDashboard(true);
   } catch (error) { notify(`Delete failed: ${error.message}`); }
 }
+function shortcutsDialog() {
+  openDlg('Keyboard shortcuts', `<dl class="kbd-list"><dt><kbd>Space</kbd></dt><dd>Play / pause</dd><dt><kbd>N</kbd> / <kbd>P</kbd></dt><dd>Next / previous track</dd><dt><kbd>←</kbd> / <kbd>→</kbd></dt><dd>Seek 5 seconds</dd><dt><kbd>Shift</kbd>+<kbd>↑</kbd>/<kbd>↓</kbd></dt><dd>Volume</dd><dt><kbd>L</kbd></dt><dd>Like current track</dd><dt><kbd>M</kbd></dt><dd>Mute</dd><dt><kbd>/</kbd></dt><dd>Focus search</dd><dt><kbd>?</kbd></dt><dd>Show this help</dd></dl>`);
+}
+function albumCoverDialog(albumId) {
+  const album = albumById(albumId); if (!album || !isAdmin) return;
+  const covers = [...new Set(album.tracks.map((t) => t.coverUrl).filter(Boolean))];
+  if (!covers.length) { notify('None of this album’s tracks has a cover yet.'); return; }
+  const current = albumCoverTrack(album.tracks)?.coverUrl || covers[0];
+  openDlg('Set album cover', `<form id="albumCoverForm"><p class="muted" style="margin:0 0 6px">Choose one cover. It will be applied to all ${album.tracks.length} tracks in “${esc(album.name)}”.</p>
+    <div class="cover-choices">${covers.map((u, i) => `<label class="cover-choice"><input type="radio" name="albumCoverPick" value="${esc(u)}" ${u === current ? 'checked' : ''} aria-label="Cover option ${i + 1}"><img src="${esc(u)}" alt="" loading="lazy"></label>`).join('')}</div>
+    <button class="btn btn-primary" id="albumCoverSave" style="width:100%" type="submit">Apply to whole album</button></form>`);
+  $('albumCoverForm').addEventListener('submit', async (e) => {
+    e.preventDefault(); const pick = document.querySelector('input[name="albumCoverPick"]:checked'); if (!pick) return;
+    const btn = $('albumCoverSave'); btn.disabled = true; btn.textContent = 'Applying…';
+    try {
+      await workerRequest('/admin/album-cover', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ track_ids:album.tracks.map((t) => t.id), cover_url:pick.value }) });
+      adminOverviewCachedAt = 0; closeDlg(); notify('Album cover updated.'); await loadCatalogue();
+    } catch (error) { btn.disabled = false; btn.textContent = 'Apply to whole album'; notify(`Update failed: ${error.message}`); }
+  });
+}
 function editAdminTrack(id) {
   const track = (adminOverview?.tracks || []).find((x) => x.id === id);
   if (!track || !isAdmin) return;
@@ -1280,8 +1327,18 @@ const views = {
     if (!album) return `<div class="page"><h1>Album not found</h1><p class="lede">This album may no longer be in the catalogue.</p><a class="btn btn-glass" href="#/albums" style="text-decoration:none">Browse albums</a></div>`;
     const artists=[...new Set(album.tracks.map(t=>t.artist))];
     const ctx=`album:${album.id}`;
-    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artists.length>1?'Various artists':esc(artists[0]||'Unknown artist')} · ${album.tracks.length} ${album.tracks.length===1?'track':'tracks'}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button></div></div></section>
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artists.length>1?'Various artists':esc(artists[0]||'Unknown artist')} · ${album.tracks.length} ${album.tracks.length===1?'track':'tracks'}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
       <div class="sec-head"><div><h2>Track list</h2><p>All catalogue tracks recognised as part of this album.</p></div></div>${rows(album.tracks, ctx)}</div>`;
+  },
+  artist(id) {
+    const list = artistTracks(id || '');
+    if (!list.length) return `<div class="page"><h1>Artist not found</h1><p class="lede">No tracks by this artist are in the catalogue.</p><a class="btn btn-glass" href="#/home" style="text-decoration:none">Back home</a></div>`;
+    const name = list[0].artist, ctx = `artist:${albumKey(name)}`;
+    const groups = new Map(); list.forEach((t) => { const n = String(t.album || '').trim(); if (!n || /^single$/i.test(n)) return; const k = albumGroupKey(n); if (!groups.has(k)) groups.set(k, { id:k, name:n, tracks:[] }); groups.get(k).tracks.push(t); });
+    const albums = [...groups.values()];
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(list, name)}<div class="collection-hero-copy"><span class="kicker">ARTIST</span><h1>${esc(name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'track' : 'tracks'}${albums.length ? ` · ${albums.length} ${albums.length === 1 ? 'album' : 'albums'}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button></div></div></section>
+      ${albums.length ? `<div class="sec-head"><div><h2>Albums</h2></div></div><div class="grid collection-grid">${albums.map((a) => `<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" data-act="open-album" data-album-id="${esc(a.id)}" style="text-decoration:none;color:inherit">${albumArtwork(a.tracks, a.name)}<span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length === 1 ? 'track' : 'tracks'}</span></a>`).join('')}</div>` : ''}
+      <div class="sec-head"><div><h2>All tracks</h2></div></div>${rows(list, ctx)}</div>`;
   },
   preferences() {
     if (!user) return `<div class="page">${empty('Sign in required','Sign in to save your music preferences.')}</div>`;
@@ -1450,6 +1507,7 @@ function syncExpandedPlayer() {
   const t=active;
   $('expandedTitle').textContent=t?.title||'Nothing playing';$('expandedArtist').textContent=t?.artist||'Pick a track to start';$('expandedAlbum').textContent=t?.album||'SONORA';
   updateCoverElement($('expandedCover'),t);
+  const descEl=$('expandedDescription'); if(descEl){const d=String(t?.description||'').trim(); descEl.textContent=d; descEl.classList.toggle('hidden',!d);}
   const dur=Number(audio.duration)||Number(t?.duration)||0;
   $('expandedDur').textContent=fmt(dur);$('expandedCur').textContent=fmt(audio.currentTime||0);
   if(!$('expandedSeek').matches(':active')){$('expandedSeek').value=dur?String(Math.round((audio.currentTime/dur)*1000)):0;$('expandedSeek').style.setProperty('--p',`${dur?Math.max(0,Math.min(1,audio.currentTime/dur))*100:0}%`);}
@@ -1532,7 +1590,7 @@ function step(dir, auto) {
 }
 function restoreLast() {
   if (active) return;
-  const t = byId(store.get('sonora-last', '')); if (t) { queue = tracks.map((x) => x.id); load(t, false); }
+  const t = byId(store.get('sonora-last', '')); if (t) { queue = tracks.map((x) => x.id); const r = getResume(); pendingSeek = r && r.id === t.id ? Number(r.t) || 0 : 0; load(t, false); }
 }
 const setSeek = (p) => { $('seek').value = p * 1000; $('seek').style.setProperty('--p', `${p * 100}%`); };
 async function beginPlaybackEvent() {
@@ -1573,6 +1631,7 @@ async function finishPlaybackEvent() {
   else if (playEventCreating) playFinishRequested = true;
 }
 audio.addEventListener('timeupdate', () => {
+  saveResume();
   const d = audio.duration; $('cur').textContent = fmt(audio.currentTime); if (d) setSeek(audio.currentTime / d);
   if ($('nowPlayingExpanded') && !$('nowPlayingExpanded').classList.contains('hidden')) syncExpandedPlayer();
   if (audio.paused || !active?.id) { lastPlaybackPosition = audio.currentTime; lastPlaybackTrackId = active?.id || null; return; }
@@ -1585,10 +1644,10 @@ audio.addEventListener('timeupdate', () => {
 });
 audio.addEventListener('seeking', () => { lastPlaybackPosition = audio.currentTime; });
 audio.addEventListener('play', () => { lastPlaybackPosition = audio.currentTime; lastPlaybackTrackId = active?.id || null; beginPlaybackEvent(); });
-audio.addEventListener('pause', () => { finishPlaybackEvent(); });
-audio.addEventListener('ended', () => { finishPlaybackEvent(); });
-window.addEventListener('pagehide', () => { finishPlaybackEvent(); try { livePresenceChannel?.untrack(); } catch (error) { console.warn('SONORA presence untrack:', error?.message || error); } });
-audio.addEventListener('loadedmetadata', () => { $('dur').textContent = fmt(audio.duration); syncExpandedPlayer(); });
+audio.addEventListener('pause', () => { saveResume(true); finishPlaybackEvent(); });
+audio.addEventListener('ended', () => { store.set('sonora-resume', null); finishPlaybackEvent(); });
+window.addEventListener('pagehide', () => { saveResume(true); finishPlaybackEvent(); try { livePresenceChannel?.untrack(); } catch (error) { console.warn('SONORA presence untrack:', error?.message || error); } });
+audio.addEventListener('loadedmetadata', () => { if (pendingSeek > 0) { try { audio.currentTime = Math.max(0, Math.min(pendingSeek, (Number(audio.duration) || pendingSeek + 1) - 1)); } catch { /* seek not ready */ } pendingSeek = 0; } $('dur').textContent = fmt(audio.duration); syncExpandedPlayer(); });
 audio.addEventListener('play', syncPlaying); audio.addEventListener('pause', syncPlaying);
 audio.addEventListener('playing', () => { syncPlaying(); if (active?.id) recordRecent(active.id); publishLivePresence(); });
 audio.addEventListener('ended', () => publishLivePresence());
@@ -1597,7 +1656,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && li
 window.addEventListener('online', () => { if (sb && !livePresenceReady && livePresenceChannel) scheduleLivePresenceReconnect(livePresenceChannel, livePresenceEpoch); });
 audio.addEventListener('waiting', () => $('play').classList.add('loading'));
 ['playing', 'canplay', 'pause', 'error'].forEach((e) => audio.addEventListener(e, () => $('play').classList.remove('loading')));
-audio.addEventListener('ended', () => { if (repeatMode === 'all' || userPreferences.autoplay_next !== false) step(1, true); });
+audio.addEventListener('ended', () => { if (sleepAtEnd) { sleepAtEnd = false; $('sleepTimer').value = '0'; notify('Sleep timer: playback stopped.'); return; } if (repeatMode === 'all' || userPreferences.autoplay_next !== false) step(1, true); });
 audio.addEventListener('error', () => { if (audio.src && active) notify('This track could not be streamed. Check that your Worker is deployed and the file exists in R2.'); });
 $('seek').addEventListener('input', (e) => { const p = e.target.value / 1000; e.target.style.setProperty('--p', `${p * 100}%`); if (audio.duration) audio.currentTime = audio.duration * p; });
 $('expandedSeek').addEventListener('input', (e) => { const p=e.target.value/1000;e.target.style.setProperty('--p',`${p*100}%`);if(audio.duration)audio.currentTime=audio.duration*p;$('expandedCur').textContent=fmt(audio.currentTime); });
@@ -1619,6 +1678,12 @@ $('clearQueue').addEventListener('click',clearUpcomingQueue);
 $('closeNowPlaying').addEventListener('click', closeNowPlaying);$('closeNowPlayingBackdrop').addEventListener('click',closeNowPlaying);
 $('expandedPlay').addEventListener('click',toggle);$('expandedPrev').addEventListener('click',()=>{if(audio.currentTime>3)audio.currentTime=0;else step(-1);});$('expandedNext').addEventListener('click',()=>step(1));
 $('expandedShuffle').addEventListener('click',()=>setShuffle(!shuffle));$('expandedRepeat').addEventListener('click',cycleRepeat);$('expandedLike').addEventListener('click',()=>active&&toggleLike(active.id));
+$('expandedArtist').addEventListener('click', () => { if (!active?.artist) return; closeNowPlaying(); location.hash = `#/artist/${encodeURIComponent(artistKey(active.artist))}`; });
+$('sleepTimer').addEventListener('change', (e) => {
+  clearTimeout(sleepTimeout); sleepTimeout = null; sleepAtEnd = false; const v = e.target.value;
+  if (v === 'end') { sleepAtEnd = true; notify('Playback will stop after this track.'); }
+  else if (Number(v) > 0) { sleepTimeout = setTimeout(() => { audio.pause(); $('sleepTimer').value = '0'; notify('Sleep timer: playback stopped.'); }, Number(v) * 60000); notify(`Sleep timer set for ${v} minutes.`); }
+});
 $('playbackSpeed').addEventListener('change',e=>{const speed=Math.max(.5,Math.min(2,Number(e.target.value)||1));audio.playbackRate=speed;store.set('sonora-playback-speed',speed);});
 const initialSpeed=Math.max(.5,Math.min(2,Number(store.get('sonora-playback-speed',1))||1));audio.playbackRate=initialSpeed;$('playbackSpeed').value=String(initialSpeed);
 $('expandedVolume').addEventListener('input',e=>{const v=Math.max(0,Math.min(100,Number(e.target.value)||0));audio.muted=false;$('vol').value=String(v);setVol(v);store.set('sonora-vol',v);});
@@ -1830,7 +1895,10 @@ $('view').addEventListener('click', (e) => {
       case 'playctx': playContext(ctx, false); break;
       case 'playctx-shuffle': playContext(ctx, true); break;
       case 'genre': genre = genre === a.dataset.genre && route().name === 'search' ? 'All' : a.dataset.genre; if (route().name === 'search') render(); else location.hash = '#/search'; break;
-      case 'clear-recent': store.set(recentKey(), []); render(); break;
+      case 'clear-recent': store.set(recentKey(), []); store.set(clearedKey(), new Date().toISOString()); render(); break;
+      case 'open-artist': e.preventDefault(); e.stopPropagation(); location.hash = `#/artist/${encodeURIComponent(a.dataset.artist || '')}`; break;
+      case 'album-cover': albumCoverDialog(a.dataset.albumId); break;
+      case 'resume': { const r = getResume(); if (!r) break; if (active?.id === r.id) { if (audio.paused) toggle(); } else { pendingSeek = Number(r.t) || 0; play(r.id, 'home'); } break; }
       case 'go': location.hash = `#/${a.dataset.to}`; break;
       case 'newpl': newPlaylistDialog(); break;
       case 'delpl': deletePlaylist(id); break;
@@ -1879,6 +1947,7 @@ $('view').addEventListener('submit', (e) => {
   }
 });
 $('view').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.dataset?.act === 'open-artist') { e.preventDefault(); e.stopPropagation(); e.target.click(); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('row')) { e.preventDefault(); play(e.target.dataset.id, e.target.dataset.ctx); }
 });
 const onSearch = debounce((v) => { query = v; if (route().name !== 'search') location.hash = '#/search'; else render(); }, 140);
@@ -1888,6 +1957,16 @@ document.addEventListener('keydown', (e) => {
   const tag = e.target.tagName;
   if (e.key === '/' && tag !== 'INPUT') { e.preventDefault(); $('topSearch').focus(); }
   if (e.code === 'Space' && (tag === 'BODY' || e.target === $('view'))) { e.preventDefault(); toggle(); }
+  if (['INPUT','TEXTAREA','SELECT'].includes(tag) || e.target.isContentEditable) return;
+  const key = e.key.toLowerCase();
+  if (e.key === '?') { e.preventDefault(); shortcutsDialog(); }
+  else if (key === 'n') step(1, false);
+  else if (key === 'p') step(-1, false);
+  else if (key === 'l' && active) toggleLike(active.id);
+  else if (key === 'm') $('muteBtn').click();
+  else if (e.key === 'ArrowRight' && tag === 'BODY' && audio.src) { e.preventDefault(); audio.currentTime = Math.min((Number(audio.duration) || 1e9), audio.currentTime + 5); }
+  else if (e.key === 'ArrowLeft' && tag === 'BODY' && audio.src) { e.preventDefault(); audio.currentTime = Math.max(0, audio.currentTime - 5); }
+  else if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); const v = Math.max(0, Math.min(100, Number($('vol').value) + (e.key === 'ArrowUp' ? 5 : -5))); audio.muted = false; $('vol').value = String(v); setVol(v); store.set('sonora-vol', v); }
 });
 
 /* ---------- accounts ---------- */
@@ -2103,7 +2182,7 @@ async function handleAuthSession(event, session) {
     if (user) {
       store.set('sonora-guest', false);
       hideAuth();
-      await Promise.allSettled([loadLibrary(), loadUserPreferences(), verifyAdminAccess()]);
+      await Promise.allSettled([loadLibrary(), loadUserPreferences(), verifyAdminAccess(), syncRemoteRecent()]);
       refreshAccount();
       if (preferencesSchemaReady && !userPreferences.onboarding_completed) {
         clonePrefsDraft();

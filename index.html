@@ -14,7 +14,7 @@
 /* Apply the saved or system theme before first paint to avoid a flash. */
 (function(){try{var m=localStorage.getItem('sonora-theme-mode')||'system';var t=m==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):m;var a=localStorage.getItem('sonora-theme-accent')||'violet';document.documentElement.dataset.theme=t;document.documentElement.dataset.accent=a;document.querySelector('meta[name=theme-color]').content=t==='light'?'#efeafb':'#0b0914'}catch(e){}})();
 </script>
-<link rel="stylesheet" href="styles.css?v=3.21.0">
+<link rel="stylesheet" href="styles.css?v=3.22.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -142,6 +142,7 @@
       <div class="expanded-track-copy"><h2 id="expandedTitle">Nothing playing</h2><p id="expandedArtist">Pick a track to start</p><small id="expandedAlbum">SONORA</small></div>
       <button class="icon-btn expanded-like" id="expandedLike" type="button" aria-label="Like track" aria-pressed="false"><svg class="ic"><use href="#i-heart"/></svg></button>
     </div>
+    <p class="expanded-description hidden" id="expandedDescription"></p>
     <div class="expanded-seek-wrap"><input type="range" id="expandedSeek" min="0" max="1000" value="0" aria-label="Seek through track"><div class="expanded-time"><span id="expandedCur">0:00</span><span id="expandedDur">0:00</span></div></div>
     <div class="expanded-controls">
       <button class="icon-btn expanded-toggle" id="expandedShuffle" type="button" aria-label="Shuffle off" aria-pressed="false"><svg class="ic"><use href="#i-shuffle"/></svg></button>
@@ -151,6 +152,7 @@
       <button class="icon-btn expanded-toggle" id="expandedRepeat" type="button" aria-label="Repeat off" aria-pressed="false"><svg class="ic"><use href="#i-repeat"/></svg></button>
     </div>
     <div class="expanded-extra-controls">
+      <label class="expanded-speed"><span>Sleep</span><select id="sleepTimer" aria-label="Sleep timer"><option value="0" selected>Off</option><option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option><option value="end">End of track</option></select></label>
       <label class="expanded-speed"><span>Speed</span><select id="playbackSpeed" aria-label="Playback speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
       <label class="expanded-volume"><svg class="ic"><use href="#i-volume"/></svg><input type="range" id="expandedVolume" min="0" max="100" value="80" aria-label="Player volume"></label>
     </div>
@@ -163,7 +165,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
-<script src="config.js?v=3.21.0"></script>
-<script src="app.js?v=3.21.0" defer></script>
+<script src="config.js?v=3.22.0"></script>
+<script src="app.js?v=3.22.0" defer></script>
 </body>
 </html>

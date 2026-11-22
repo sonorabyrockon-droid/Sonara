@@ -1,0 +1,17 @@
+SONORA 3.22 — new listener + admin features
+
+Listener (frontend only)
+ 1. Continue listening: resumes the last track at the saved second (Home card + auto-restore on reload).
+ 2. Sleep timer: Off / 15 / 30 / 60 min / End of track (full player).
+ 3. Keyboard shortcuts: Space, N/P, Left/Right (seek 5s), Shift+Up/Down (volume), L, M, /, ? (help).
+ 4. Artist pages: click any artist name -> #/artist/<name> with Play, Shuffle, albums, tracks.
+ 5. Track description now shown in the full player.
+ 6. Recently played syncs across devices (needs sql/sonora-3-22-listening-sync.sql; falls back to this device if not run).
+
+Admin (needs Worker redeploy)
+ 7. Album page -> "Set album cover": pick one existing cover and apply it to every track in the album
+    (POST /admin/album-cover).
+
+Deploy order: 1) run sql/sonora-3-22-listening-sync.sql in Supabase  2) deploy Worker (version must read 3.22.0 at its "/" URL)
+              3) publish frontend files.
+No changes to config.js, wrangler.toml, Supabase keys, auth, Realtime or STREAM_URL.
