@@ -14,7 +14,7 @@ const store = {
 };
 const fmt = (s) => { s = Math.max(0, Math.floor(Number(s) || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const hue = (seed) => { let h = 2166136261; for (const c of String(seed)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } h ^= h >>> 15; h = Math.imul(h, 2246822507); h ^= h >>> 13; return (h >>> 0) % 360; };
-const safeUrl = (v) => { try { const u = new URL(v, location.href); return ['http:', 'https:'].includes(u.protocol) ? u.href : ''; } catch { return ''; } };
+const safeUrl = (v) => { if (!String(v || '').trim()) return ''; try { const u = new URL(v, location.href); return ['http:', 'https:'].includes(u.protocol) ? u.href : ''; } catch { return ''; } };
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
 // Supabase and streaming are independent services: catalogue/auth can work even
@@ -123,11 +123,11 @@ async function loadLibrary() {
   }
   const [l, p] = await Promise.all([
     sb.from('likes').select('track_id'),
-    sb.from('playlists').select('id,name,created_at,playlist_tracks(track_id,position)').order('created_at', { ascending:false })
+    sb.from('playlists').select('id,name,created_at,updated_at,playlist_tracks(track_id,position)').order('created_at', { ascending:false })
   ]);
   if (l.error || p.error) notify('Could not sync your library. Check your connection.');
   if (!l.error) liked = new Set(l.data.map((r) => r.track_id));
-  if (!p.error) playlists = p.data.map((r) => ({ id:r.id, name:r.name,
+  if (!p.error) playlists = p.data.map((r) => ({ id:r.id, name:r.name, updatedAt:r.updated_at || r.created_at || '',
     ids:(r.playlist_tracks || []).sort((a, b) => a.position - b.position).map((x) => x.track_id) }));
   render();
 }
@@ -241,11 +241,40 @@ function refreshRecentSection() {
   const host = $('recentListening'); if (!host || route().name !== 'home') return;
   host.innerHTML = recentSection();
 }
+const fmtTotal = (list) => { const sec = (list || []).reduce((n, t) => n + (Number(t.duration) || 0), 0); if (!sec) return ''; const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return h ? `${h} hr${m ? ` ${m} min` : ''}` : `${Math.max(1, m)} min`; };
+const artistLinks = (list) => { const names = [...new Set((list || []).map((t) => t.artist))]; if (names.length !== 1) return names.length ? 'Various artists' : 'Unknown artist'; return `<span class="artist-link" role="link" tabindex="0" data-act="open-artist" data-artist="${esc(albumKey(names[0]))}">${esc(names[0])}</span>`; };
+let plView = { id:'', q:'', sort:'order' };
+function playlistView(id) {
+  if (plView.id !== id) plView = { id, q:'', sort:'order' };
+  let list = (playlistById(id)?.ids || []).map(byId).filter(Boolean);
+  const q = plView.q.trim().toLowerCase();
+  if (q) list = list.filter((t) => `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q));
+  if (plView.sort === 'title') list = [...list].sort((a, b) => a.title.localeCompare(b.title));
+  else if (plView.sort === 'artist') list = [...list].sort((a, b) => a.artist.localeCompare(b.artist) || a.title.localeCompare(b.title));
+  else if (plView.sort === 'duration') list = [...list].sort((a, b) => b.duration - a.duration);
+  return list;
+}
+function playlistRowsHtml(id) {
+  const full = playlistById(id)?.ids.length || 0, list = playlistView(id);
+  if (!full) return empty('This playlist is empty', 'Use the + button on any track to add it here.');
+  if (!list.length) return empty('No matches', 'Try a different search.');
+  return rows(list, `plv:${id}`, { remove:true });
+}
+function queueMany(ids, next) {
+  const list = [...new Set(ids)].filter((id) => byId(id) && id !== active?.id);
+  if (!list.length) { notify('Nothing new to queue.'); return; }
+  if (!queue.length && active) queue = [active.id];
+  queue = queue.filter((id) => !list.includes(id));
+  const i = queue.indexOf(active?.id);
+  if (next) queue.splice(i < 0 ? queue.length : i + 1, 0, ...list); else queue.push(...list);
+  renderExpandedQueue(); notify(next ? `Playing ${list.length} ${list.length === 1 ? 'track' : 'tracks'} next.` : `Added ${list.length} ${list.length === 1 ? 'track' : 'tracks'} to your queue.`);
+}
 const artistKey = (name) => albumKey(name);
 const artistTracks = (key) => tracks.filter((t) => artistKey(t.artist) === albumKey(key));
 const ctxList = (ctx) => {
   if (ctx === 'recent') return recentTracks();
   if (ctx.startsWith('artist:')) return artistTracks(ctx.slice(7));
+  if (ctx.startsWith('plv:')) return playlistView(ctx.slice(4));
   if (ctx === 'liked') return tracks.filter((t) => liked.has(t.id));
   if (ctx === 'search') return filtered();
   if (ctx.startsWith('pl:')) return (playlistById(ctx.slice(3))?.ids || []).map(byId).filter(Boolean);
@@ -1307,15 +1336,20 @@ const views = {
     <div class="grid collection-grid">
       <a class="card collection-card liked-collection" href="#/liked" style="text-decoration:none;color:inherit">${collectionArtwork(ctxList('liked'), 'Liked songs')}<span class="t">Liked songs</span><span class="s">${liked.size.toLocaleString()} saved songs</span></a>
       <button class="card new" data-act="newpl">${ic('plus')}<strong>New playlist</strong><span class="s">Start a new collection</span></button>
-      ${playlists.map((p) => { const list=p.ids.map(byId).filter(Boolean); return `<a class="card collection-card" href="#/playlist/${encodeURIComponent(p.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(list, p.name)}<span class="t">${esc(p.name)}</span><span class="s">${list.length} ${list.length === 1 ? 'song' : 'songs'} · Playlist</span></a>`; }).join('')}
+      ${playlists.map((p) => { const list=p.ids.map(byId).filter(Boolean); return `<a class="card collection-card" href="#/playlist/${encodeURIComponent(p.id)}" style="text-decoration:none;color:inherit">${albumArtwork(list, p.name)}<span class="t">${esc(p.name)}</span><span class="s">${list.length} ${list.length === 1 ? 'song' : 'songs'} · Playlist</span></a>`; }).join('')}
     </div></div>`;
   },
   playlist(id) {
     const p = playlistById(id);
     if (!p) return `<div class="page"><h1>Playlist not found</h1><p class="lede">It may have been deleted.</p><a class="btn btn-glass" href="#/playlists" style="text-decoration:none">Back to playlists</a></div>`;
-    const list = ctxList(`pl:${id}`);
-    return `<div class="page library-page"><section class="collection-hero glass">${collectionArtwork(list, p.name)}<div class="collection-hero-copy"><span class="kicker">PLAYLIST</span><h1>${esc(p.name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'song' : 'songs'} · Personal collection</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="pl:${esc(id)}" ${list.length?'':'disabled'}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="pl:${esc(id)}" ${list.length?'':'disabled'}>${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="delpl" data-id="${esc(id)}">${ic('trash')}Delete</button></div></div></section>
-    ${list.length ? `<div class="sec-head"><div><h2>Tracks</h2><p>Use the heart to save favourites, or + to add them to another playlist.</p></div></div>${rows(list, `pl:${id}`, { remove:true })}` : empty('This playlist is empty', 'Use the + button on any track to add it here.')}</div>`;
+    plView = plView.id === id ? plView : { id, q:'', sort:'order' };
+    const list = ctxList(`pl:${id}`), total = fmtTotal(list), ctx = `pl:${id}`;
+    const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' }) : '';
+    const dis = list.length ? '' : 'disabled';
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(list, p.name)}<div class="collection-hero-copy"><span class="kicker">PLAYLIST</span><h1>${esc(p.name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'song' : 'songs'}${total ? ` · ${total}` : ''}${updated ? ` · Updated ${esc(updated)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}" ${dis}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}" ${dis}>${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}" ${dis}>Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}" ${dis}>${ic('queue')}Add to queue</button><button class="btn btn-glass" data-act="rename-pl" data-id="${esc(id)}">Rename</button><button class="btn btn-glass" data-act="dup-pl" data-id="${esc(id)}">Duplicate</button><button class="btn btn-glass" data-act="delpl" data-id="${esc(id)}">${ic('trash')}Delete</button></div></div></section>
+    <div class="sec-head"><div><h2>Tracks</h2><p>Use the heart to save favourites, or + to add them to another playlist.</p></div></div>
+    ${list.length > 1 ? `<div class="pl-tools"><input class="input" id="plSearch" type="search" placeholder="Search this playlist" value="${esc(plView.q)}" aria-label="Search this playlist"><select class="input" id="plSort" aria-label="Sort playlist">${[['order','Playlist order'],['title','Title A–Z'],['artist','Artist A–Z'],['duration','Longest first']].map(([v, l]) => `<option value="${v}" ${plView.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
+    <div id="playlistRows">${playlistRowsHtml(id)}</div></div>`;
   },
   albums() {
     const albums = albumEntries();
@@ -1325,9 +1359,10 @@ const views = {
   album(id) {
     const album = albumById(id);
     if (!album) return `<div class="page"><h1>Album not found</h1><p class="lede">This album may no longer be in the catalogue.</p><a class="btn btn-glass" href="#/albums" style="text-decoration:none">Browse albums</a></div>`;
-    const artists=[...new Set(album.tracks.map(t=>t.artist))];
-    const ctx=`album:${album.id}`;
-    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artists.length>1?'Various artists':esc(artists[0]||'Unknown artist')} · ${album.tracks.length} ${album.tracks.length===1?'track':'tracks'}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
+    const ctx = `album:${album.id}`, n = album.tracks.length, total = fmtTotal(album.tracks);
+    const genresOf = [...new Set(album.tracks.map((t) => t.genre).filter(Boolean))].slice(0, 3).join(', ');
+    const allLiked = album.tracks.every((t) => liked.has(t.id));
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artistLinks(album.tracks)} · ${n} ${n === 1 ? 'track' : 'tracks'}${total ? ` · ${total}` : ''}${genresOf ? ` · ${esc(genresOf)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}">Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}">${ic('queue')}Add to queue</button><button class="btn btn-glass" data-act="album-playlist" data-album-id="${esc(album.id)}">${ic('plus')}Add to playlist</button><button class="btn btn-glass" data-act="album-like" data-album-id="${esc(album.id)}" aria-pressed="${allLiked}">${ic(allLiked ? 'heart-fill' : 'heart')}${allLiked ? 'Unlike album' : 'Like album'}</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
       <div class="sec-head"><div><h2>Track list</h2><p>All catalogue tracks recognised as part of this album.</p></div></div>${rows(album.tracks, ctx)}</div>`;
   },
   artist(id) {
@@ -1731,13 +1766,64 @@ async function createPlaylist(name) {
   }
   const p = { id:`local-${Date.now()}`, name, ids:[] }; playlists.unshift(p); saveGuest(); return p;
 }
+function touchPlaylist(p) {
+  p.updatedAt = new Date().toISOString();
+  if (isCloudUser()) sb.from('playlists').update({ updated_at:p.updatedAt }).eq('id', p.id).then(() => {}, () => {}); else saveGuest();
+}
+async function addTracksToPlaylist(p, ids) {
+  const fresh = [...new Set(ids)].filter((id) => byId(id) && !p.ids.includes(id));
+  if (!fresh.length) { notify(`Everything is already in ${p.name}.`); return 0; }
+  if (isCloudUser()) {
+    const { error } = await sb.from('playlist_tracks').insert(fresh.map((id, i) => ({ playlist_id:p.id, track_id:id, position:p.ids.length + i })));
+    if (error) { notify('Could not add the tracks. Try again.'); return -1; }
+  }
+  p.ids.push(...fresh); touchPlaylist(p);
+  notify(`Added ${fresh.length} ${fresh.length === 1 ? 'track' : 'tracks'} to ${p.name}.`); return fresh.length;
+}
+function addManyDialog(ids, label) {
+  const list = [...new Set(ids)].filter(byId); if (!list.length) return;
+  openDlg('Add to playlist', `<p class="muted" style="margin:0">Save ${list.length} ${list.length === 1 ? 'track' : 'tracks'} from “${esc(label)}” to:</p><div class="pick">${playlists.map((p, i) => `<button type="button" data-pl="${i}">${ic('list')}${esc(p.name)}</button>`).join('')}<button type="button" data-pl="new">${ic('plus')}New playlist</button></div>`);
+  qsa('[data-pl]', $('dlgBody')).forEach((b) => b.addEventListener('click', async () => {
+    if (b.dataset.pl === 'new') { newPlaylistDialog(list); return; }
+    if (await addTracksToPlaylist(playlists[Number(b.dataset.pl)], list) >= 0) { closeDlg(); render(); }
+  }));
+}
+async function likeMany(ids) {
+  const list = [...new Set(ids)].filter(byId); if (!list.length) return;
+  const all = list.every((id) => liked.has(id));
+  const changed = all ? list : list.filter((id) => !liked.has(id));
+  changed.forEach((id) => all ? liked.delete(id) : liked.add(id)); render();
+  if (isCloudUser()) {
+    const r = all ? await sb.from('likes').delete().eq('user_id', user.id).in('track_id', changed) : await sb.from('likes').insert(changed.map((id) => ({ user_id:user.id, track_id:id })));
+    if (r.error) { changed.forEach((id) => all ? liked.add(id) : liked.delete(id)); render(); notify('Could not sync your likes. Try again.'); return; }
+  } else saveGuest();
+  notify(all ? 'Removed from liked songs.' : `Liked ${changed.length} ${changed.length === 1 ? 'song' : 'songs'}.`);
+}
+function renamePlaylist(id) {
+  const p = playlistById(id); if (!p) return;
+  openDlg('Rename playlist', `<form id="plRenameForm"><div class="field"><label for="plRenameName">Name</label><input class="input" id="plRenameName" maxlength="50" required value="${esc(p.name)}" autocomplete="off"></div><button class="btn btn-primary" style="width:100%" type="submit">Save name</button></form>`);
+  $('plRenameName').focus(); $('plRenameName').select();
+  $('plRenameForm').addEventListener('submit', async (e) => {
+    e.preventDefault(); const name = $('plRenameName').value.trim().slice(0, 50); if (!name) return;
+    if (isCloudUser()) { const { error } = await sb.from('playlists').update({ name, updated_at:new Date().toISOString() }).eq('id', id); if (error) { notify('Could not rename the playlist.'); return; } }
+    p.name = name; p.updatedAt = new Date().toISOString(); if (!isCloudUser()) saveGuest();
+    closeDlg(); render(); notify('Playlist renamed.');
+  });
+}
+async function duplicatePlaylist(id) {
+  const p = playlistById(id); if (!p) return;
+  const copy = await createPlaylist(`${p.name.slice(0, 43)} (copy)`); if (!copy) return;
+  if (p.ids.length && await addTracksToPlaylist(copy, p.ids) < 0) { notify('Copy created, but some tracks could not be added.'); }
+  else notify('Playlist duplicated.');
+  location.hash = `#/playlist/${encodeURIComponent(copy.id)}`;
+}
 async function addToPlaylist(p, trackId) {
   if (p.ids.includes(trackId)) { notify(`Already in ${p.name}.`); return true; }
   if (isCloudUser()) {
     const { error } = await sb.from('playlist_tracks').insert({ playlist_id:p.id, track_id:trackId, position:p.ids.length });
     if (error) { notify('Could not add the track. Try again.'); return false; }
   }
-  p.ids.push(trackId); if (!isCloudUser()) saveGuest(); notify(`Added to ${p.name}.`); return true;
+  p.ids.push(trackId); touchPlaylist(p); notify(`Added to ${p.name}.`); return true;
 }
 function newPlaylistDialog(thenAdd) {
   openDlg('New playlist', `<form id="plForm"><div class="field"><label for="plName">Name</label><input class="input" id="plName" maxlength="50" required placeholder="Sunday morning" autocomplete="off"></div><button class="btn btn-primary" style="width:100%" type="submit">Create playlist</button></form>`);
@@ -1745,7 +1831,7 @@ function newPlaylistDialog(thenAdd) {
   $('plForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const p = await createPlaylist($('plName').value); if (!p) return;
-    if (thenAdd) await addToPlaylist(p, thenAdd); else notify('Playlist created.');
+    if (Array.isArray(thenAdd)) await addTracksToPlaylist(p, thenAdd); else if (thenAdd) await addToPlaylist(p, thenAdd); else notify('Playlist created.');
     closeDlg(); render();
   });
 }
@@ -1770,7 +1856,7 @@ async function deletePlaylist(id) {
 async function removeFromPlaylist(plId, trackId) {
   const p = playlistById(plId); if (!p) return;
   if (isCloudUser()) { const { error } = await sb.from('playlist_tracks').delete().eq('playlist_id', plId).eq('track_id', trackId); if (error) { notify('Could not remove the track.'); return; } }
-  p.ids = p.ids.filter((x) => x !== trackId); if (!isCloudUser()) saveGuest(); render();
+  p.ids = p.ids.filter((x) => x !== trackId); touchPlaylist(p); render();
 }
 
 /* ---------- Music & Audience Intelligence ---------- */
@@ -1898,6 +1984,12 @@ $('view').addEventListener('click', (e) => {
       case 'clear-recent': store.set(recentKey(), []); store.set(clearedKey(), new Date().toISOString()); render(); break;
       case 'open-artist': e.preventDefault(); e.stopPropagation(); location.hash = `#/artist/${encodeURIComponent(a.dataset.artist || '')}`; break;
       case 'album-cover': albumCoverDialog(a.dataset.albumId); break;
+      case 'album-playlist': { const al = albumById(a.dataset.albumId); if (al) addManyDialog(al.tracks.map((t) => t.id), al.name); break; }
+      case 'album-like': { const al = albumById(a.dataset.albumId); if (al) likeMany(al.tracks.map((t) => t.id)); break; }
+      case 'queue-next-ctx': queueMany(ctxList(ctx).map((t) => t.id), true); break;
+      case 'queue-all-ctx': queueMany(ctxList(ctx).map((t) => t.id), false); break;
+      case 'rename-pl': renamePlaylist(id); break;
+      case 'dup-pl': duplicatePlaylist(id); break;
       case 'resume': { const r = getResume(); if (!r) break; if (active?.id === r.id) { if (audio.paused) toggle(); } else { pendingSeek = Number(r.t) || 0; play(r.id, 'home'); } break; }
       case 'go': location.hash = `#/${a.dataset.to}`; break;
       case 'newpl': newPlaylistDialog(); break;
@@ -1946,6 +2038,9 @@ $('view').addEventListener('submit', (e) => {
     saveUserPreferences(false);
   }
 });
+const refreshPlaylistRows = () => { const host = $('playlistRows'); if (host && plView.id) host.innerHTML = playlistRowsHtml(plView.id); };
+$('view').addEventListener('input', (e) => { if (e.target.id === 'plSearch') { plView.q = e.target.value; refreshPlaylistRows(); } });
+$('view').addEventListener('change', (e) => { if (e.target.id === 'plSort') { plView.sort = e.target.value; refreshPlaylistRows(); } });
 $('view').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.dataset?.act === 'open-artist') { e.preventDefault(); e.stopPropagation(); e.target.click(); return; }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('row')) { e.preventDefault(); play(e.target.dataset.id, e.target.dataset.ctx); }
@@ -2139,32 +2234,31 @@ function newPasswordDialog() {
 
 
 // SONORA is delivered as a responsive website. Remove only SONORA's legacy
-// service worker; never unregister unrelated apps' workers on a shared origin.
-if ('serviceWorker' in navigator) {
+/* ---------- installable app (PWA) ---------- */
+// Register SONORA's own service worker (required for Chrome/Edge install on phone and tablet).
+// sw.js is network-first for the app shell, so a fresh deployment always wins over the cache.
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   window.addEventListener('load', async () => {
     try {
-      const appRoot = new URL('./', location.href);
-      const sonoraWorkerPath = new URL('sw.js', appRoot).pathname;
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      const sonoraRegistrations = registrations.filter((registration) => {
-        const workers = [registration.active, registration.waiting, registration.installing].filter(Boolean);
-        return workers.some((worker) => {
-          try {
-            const script = new URL(worker.scriptURL);
-            return script.origin === appRoot.origin && script.pathname === sonoraWorkerPath;
-          } catch { return false; }
-        });
-      });
-      await Promise.all(sonoraRegistrations.map((registration) => registration.unregister()));
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        await Promise.all(keys.filter((key) => key.startsWith('sonora-shell-')).map((key) => caches.delete(key)));
-      }
-    } catch (err) {
-      console.warn('Could not clear an old SONORA app cache:', err);
-    }
+      const registration = await navigator.serviceWorker.register('./sw.js', { scope:'./', updateViaCache:'none' });
+      registration.update().catch(() => {});
+    } catch (err) { console.warn('SONORA service worker could not be registered:', err); }
   });
 }
+let deferredInstall = null;
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+const isIosSafari = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function syncInstallButton() {
+  const btn = $('installBtn'); if (!btn) return;
+  btn.classList.toggle('hidden', isStandalone() || !(deferredInstall || isIosSafari()));
+}
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; syncInstallButton(); });
+window.addEventListener('appinstalled', () => { deferredInstall = null; syncInstallButton(); notify('SONORA is installed.'); });
+$('installBtn')?.addEventListener('click', async () => {
+  if (deferredInstall) { deferredInstall.prompt(); try { await deferredInstall.userChoice; } catch { /* dismissed */ } deferredInstall = null; syncInstallButton(); return; }
+  openDlg('Install SONORA', '<p class="muted" style="margin-top:0">On iPhone or iPad: tap the <b>Share</b> button in Safari, then <b>Add to Home Screen</b>.</p><p class="muted">On Android or desktop Chrome: open the browser menu and choose <b>Install app</b> (or <b>Add to Home screen</b>).</p>');
+});
+syncInstallButton();
 
 /* ---------- auth session orchestration + start ---------- */
 async function handleAuthSession(event, session) {

@@ -1,0 +1,13 @@
+SONORA 3.23 — album and playlist upgrades (frontend only; no SQL, Worker or config changes)
+
+Albums
+ - Details line: artist (link to artist page), track count, total duration, genres.
+ - Play next / Add to queue for the whole album.
+ - Add whole album to a playlist (existing or new).
+ - Like / Unlike whole album.
+Playlists
+ - Rename, Duplicate, Play next, Add to queue.
+ - Stats: song count, total duration, last updated.
+ - Search inside a playlist and sort (playlist order, title, artist, longest first).
+ - Single cover (most-used track cover) on playlist cards and header, matching albums.
+Existing RLS already allows these (playlists: update granted; playlist_tracks/likes: bulk insert/delete by owner).

@@ -1,0 +1,20 @@
+SONORA 3.24 — phone audit + app install fix (frontend only; no SQL / Worker / config changes)
+
+Install (Chrome on phone & tablet) — root causes found and fixed
+ 1. index.html had no <link rel="manifest">  -> added (plus apple-touch-icon and iOS web-app meta tags).
+ 2. app.js UNREGISTERED sw.js on every load and never registered it -> now registers ./sw.js.
+ 3. Icons were SVG only (Chrome needs 192 + 512 PNG) -> added public/icons/ (192, 512, maskable 512, 180, favicon).
+ 4. No install button -> top-bar Install button (Chrome/Edge prompt; iPhone/iPad shows Add to Home Screen steps).
+ 5. Manifest now lists PNG icons, categories and shortcuts (Search, Liked songs, Playlists).
+ Verified in real Chromium: no manifest errors, no installability errors, service worker activated.
+
+Phone / tablet layout (tested in real Chromium at 320, 360, 390, 430, 768, 1024 px across Home, Search, Liked,
+Playlists, Playlist, Albums, Album, Artist, Settings and the full player): no horizontal overflow.
+ - Fixed: 320px phones — new Sleep control pushed the volume slider off-screen (controls now wrap).
+ - Fixed: tracks without cover art showed a broken-image icon instead of the initial letter
+   (empty URL was being resolved to the page address; also affected audio URL checks).
+ - Fixed: pink focus outline drawn around the whole page after navigation.
+ - Improved: album/playlist action buttons are a tidy 2-column grid on phones; Home hero cover capped at 200px.
+
+After deploying: open the site on the phone, hard refresh once, then use Chrome menu -> Install app
+(or the new Install icon in the top bar). It must be served over HTTPS (GitHub Pages is).

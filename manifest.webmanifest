@@ -9,7 +9,16 @@
   "background_color": "#0b0914",
   "theme_color": "#0b0914",
   "orientation": "any",
+  "categories": ["music", "entertainment"],
   "icons": [
-    { "src": "public/sonora-mark.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "public/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "public/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "public/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "public/sonora-mark.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Search", "url": "./#/search", "icons": [{ "src": "public/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Liked songs", "url": "./#/liked", "icons": [{ "src": "public/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Playlists", "url": "./#/playlists", "icons": [{ "src": "public/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

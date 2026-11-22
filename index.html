@@ -7,6 +7,13 @@
 <meta name="description" content="SONORA — stream independent music, build playlists and keep your favourites in sync.">
 <title>SONORA — Independent music lives here</title>
 <link rel="icon" href="public/sonora-mark.svg" type="image/svg+xml">
+<link rel="icon" href="public/icons/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="public/icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SONORA">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -14,7 +21,7 @@
 /* Apply the saved or system theme before first paint to avoid a flash. */
 (function(){try{var m=localStorage.getItem('sonora-theme-mode')||'system';var t=m==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):m;var a=localStorage.getItem('sonora-theme-accent')||'violet';document.documentElement.dataset.theme=t;document.documentElement.dataset.accent=a;document.querySelector('meta[name=theme-color]').content=t==='light'?'#efeafb':'#0b0914'}catch(e){}})();
 </script>
-<link rel="stylesheet" href="styles.css?v=3.22.0">
+<link rel="stylesheet" href="styles.css?v=3.24.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -42,6 +49,7 @@
 <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
 <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
 <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.1A9.7 9.7 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.7A17 17 0 0 0 2 12s4 7 10 7c1.7 0 3.2-.4 4.5-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
 <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/><path d="M3 4v16h18" opacity=".0"/></symbol>
 </defs></svg>
 
@@ -90,6 +98,7 @@
     <header class="top glass">
       <label class="search"><svg class="ic"><use href="#i-search"/></svg><span class="sr">Search music</span><input id="topSearch" type="search" placeholder="Search tracks, artists, genres" autocomplete="off"></label>
       <span class="grow"></span>
+      <button class="icon-btn hidden" id="installBtn" type="button" aria-label="Install SONORA app" title="Install SONORA"><svg class="ic"><use href="#i-download"/></svg></button>
       <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch to light mode"><svg class="ic"><use href="#i-sun"/></svg></button>
       <button class="acct" id="acctBtn" type="button">Sign in</button>
     </header>
@@ -165,7 +174,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
-<script src="config.js?v=3.22.0"></script>
-<script src="app.js?v=3.22.0" defer></script>
+<script src="config.js?v=3.24.0"></script>
+<script src="app.js?v=3.24.0" defer></script>
 </body>
 </html>

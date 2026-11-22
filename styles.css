@@ -778,3 +778,21 @@ body.now-playing-open{overflow:hidden}
 .cover-choice input:checked+img{border-color:var(--accent)}.cover-choice input:focus-visible+img{outline:2px solid var(--accent)}
 .kbd-list{display:grid;grid-template-columns:auto 1fr;gap:8px 16px;margin:0;font-size:14px}.kbd-list dt{font-weight:700}.kbd-list dd{margin:0;color:var(--muted)}
 .kbd-list kbd{padding:2px 7px;border:1px solid var(--stroke);border-radius:6px;background:var(--glass2);font:600 12px var(--font-d,inherit)}
+
+/* SONORA 3.23 */
+.collection-hero-copy .acts{display:flex;flex-wrap:wrap;gap:9px}
+.pl-tools{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 14px}.pl-tools .input{flex:1 1 200px;max-width:320px}
+.collection-hero-copy .lede .artist-link{color:inherit;font-weight:650}
+/* SONORA 3.24: extra player controls wrap on very small phones */
+.expanded-extra-controls{flex-wrap:wrap;row-gap:8px}
+.expanded-extra-controls .expanded-volume{flex:1 1 130px;min-width:0}
+.expanded-extra-controls .expanded-volume input{min-width:0;width:100%}
+
+/* SONORA 3.24: phone polish */
+#view:focus{outline:none}
+@media(max-width:520px){
+  .collection-hero-copy .acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .collection-hero-copy .acts .btn{justify-content:center;min-width:0;padding-inline:10px;font-size:13.5px;white-space:nowrap}
+  .collection-hero-copy .acts .btn:last-child:nth-child(odd){grid-column:1/-1}
+  .feature>.cover{max-width:200px}
+}
