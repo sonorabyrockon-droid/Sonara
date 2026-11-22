@@ -11,6 +11,7 @@ create table if not exists public.tracks (
   artist text not null check (char_length(artist) between 1 and 120),
   album text not null default 'Single' check (char_length(album) <= 160),
   genre text not null default 'Other' check (char_length(genre) <= 60),
+  description text not null default '' constraint tracks_description_length_check check (char_length(description) <= 2000),
   audio_key text not null unique,
   audio_url text,
   cover_url text,

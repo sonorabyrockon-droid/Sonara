@@ -270,6 +270,7 @@ dialog::backdrop{background:rgba(8,5,20,.5);backdrop-filter:blur(6px)}
 .admin-track-info strong,.admin-track-info span,.admin-track-info small{overflow-wrap:anywhere}
 .admin-track-info span{font-size:13px;color:var(--muted)}
 .admin-track-info small{font-size:11px;color:var(--muted);opacity:.8}
+.admin-track-info .admin-track-description{font-size:12px;line-height:1.45;opacity:1;white-space:pre-wrap;overflow-wrap:anywhere;max-width:900px}
 .admin-track-actions{display:flex;align-items:center;gap:7px;flex:none}
 .admin-audit{display:grid;gap:8px}
 .audit-row{display:grid;grid-template-columns:minmax(100px,.5fr) minmax(160px,.6fr) 2fr;gap:12px;padding:10px 12px;background:var(--glass);border:1px solid var(--stroke);border-radius:var(--r-sm);font-size:12px}
@@ -760,3 +761,6 @@ body.now-playing-open{overflow:hidden}
   .player .np .t,.player .np .s{max-width:37vw}
 }
 @media(max-width:860px){body.is-admin .tabbar:has(#mobileDiagnosticsNav:not(.hidden)){grid-template-columns:repeat(7,minmax(0,1fr))}}
+
+/* SONORA 3.20 — catalogue description text. */
+.admin-track-info .admin-track-description{color:var(--muted);}

@@ -201,3 +201,25 @@ The 3.19 frontend audit fixes three responsive issues: the compact phone player 
 Legacy service-worker cleanup is scoped to SONORA's own `sw.js` registration, so it does not remove unrelated workers on the same origin. Frontend asset URLs and shell cache are versioned to 3.19.0.
 
 Local simulated-browser checks covered 10 primary routes at nine viewport widths, mock playback interactions, mock Admin and Music Intelligence rendering on six device widths, and the desktop launcher popup. These tests do not replace live Supabase/Worker/R2 testing or physical-device checks.
+
+
+## SONORA 3.20 — catalogue description, refresh consistency and batch upload
+
+- Track descriptions are now stored in `public.tracks.description`, editable from the Admin catalogue and returned in the Admin overview and published catalogue query.
+- Track edits and deletes invalidate the two-minute Admin snapshot and request a fresh server overview before the catalogue is re-rendered. A forced refresh is queued if another overview request is already in flight.
+- Multiple-file uploads remain sequential (one request per audio file), reject likely duplicate title/artist pairs on the Worker as well as in the browser, prevent a second upload batch from starting while one is active, reuse duration metadata already scanned for each file, and refresh the catalogue once after the batch instead of after every file.
+- Existing upload caps are unchanged: 100 MB per file and 12 tracks per administrator per hour. Failed items do not stop later files in the batch.
+
+### Required database step for existing projects
+
+Run `sql/sonora-3-20-music-description.sql` in Supabase SQL Editor before deploying the 3.20 frontend and Worker. This adds the missing `description` column and its 2,000-character check without deleting existing metadata. New installations also get the column from `sql/schema.sql`.
+
+### Deploy 3.20
+
+1. Run the SQL migration above.
+2. Publish the contents of `sonora-github-ready` to the existing GitHub Pages repository.
+3. Deploy `cloudflare/worker` using `npx wrangler deploy`.
+4. Sign in as the administrator, edit a track description, save, and confirm the Admin catalogue updates without a browser reload.
+5. Upload a small batch containing valid tracks, a duplicate, and an unsupported file. Confirm valid tracks publish once, duplicates are rejected, unsupported files are skipped, and the final catalogue refreshes once.
+
+Live Supabase/R2 deployment testing still requires deploying this package to the configured services; local source checks do not prove production behavior.

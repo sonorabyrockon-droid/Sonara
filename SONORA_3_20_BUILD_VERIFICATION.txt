@@ -1,0 +1,42 @@
+SONORA 3.20 — BUILD VERIFICATION
+================================
+
+Scope
+-----
+- Persist track descriptions in Supabase and display them in the Admin music catalogue.
+- Refresh catalogue/admin data after a description edit without a browser reload.
+- Audit and harden multi-file uploads, duplicate detection and batch refresh behavior.
+
+Automated checks run
+--------------------
+- node --check app.js: PASS
+- node --check cloudflare/worker/src/index.js: PASS
+- node --check sw.js: PASS
+- npm test (from cloudflare/worker): PASS — 3 tests
+  1. PATCH saves and returns the track description.
+  2. Duplicate title/artist upload is rejected before any R2 write.
+  3. Admin overview returns the persisted description in its catalogue payload.
+- HTML/static audit: PASS — 97 IDs, no duplicate IDs, no missing local assets.
+- Source consistency audit: PASS — description field, forced refresh queue,
+  single end-of-batch catalogue refresh, and upload lock are present.
+- JSON manifests: PASS.
+
+Not performed
+-------------
+- The SQL migration was not executed against the live Supabase project.
+- The Cloudflare Worker was not deployed to production.
+- GitHub Pages was not published from this session.
+- No live R2/Supabase end-to-end upload test was performed.
+
+Required deployment order
+-------------------------
+1. Back up the existing Supabase database.
+2. Run sql/sonora-3-20-music-description.sql in Supabase SQL Editor.
+3. Publish the repository contents from this package to GitHub Pages.
+4. Deploy the Worker from cloudflare/worker with `npx wrangler deploy`.
+5. Verify an Admin description edit updates the catalogue without a hard refresh.
+6. Test a batch with valid files, a duplicate title/artist, and an unsupported file.
+
+Existing limits are unchanged: 100 MB per audio file and 12 uploads per
+administrator per hour. Multi-file uploads are sequential and report per-file
+success/failure. Only upload recordings you own or are licensed to distribute.

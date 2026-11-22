@@ -102,19 +102,20 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', 
 /* ---------- catalogue ---------- */
 const streamUrl = (key) => streamingConfigured && key ? `${String(C.STREAM_URL).replace(/\/$/, '')}/stream/${String(key).split('/').map(encodeURIComponent).join('/')}` : '';
 function mapRow(r) {
-  return { id:r.id, title:r.title || 'Untitled', artist:r.artist || 'Unknown artist', album:r.album || 'Single', genre:r.genre || 'Other',
+  return { id:r.id, title:r.title || 'Untitled', artist:r.artist || 'Unknown artist', album:r.album || 'Single', genre:r.genre || 'Other', description:r.description || '',
     duration:Number(r.duration_seconds) || 0, coverUrl:safeUrl(r.cover_url || ''), audioKey:r.audio_key||'', fileSize:Number(r.file_size)||0, createdAt:r.created_at||'',
     audioUrl: r.audio_key ? streamUrl(r.audio_key) : safeUrl(r.audio_url || '') };
 }
-async function loadCatalogue() {
+async function loadCatalogue({ renderAfter = true } = {}) {
   if (!sb) { loaded = true; return; }
   const { data, error } = await sb.from('tracks')
-    .select('id,title,artist,album,genre,duration_seconds,audio_key,audio_url,cover_url,created_at')
+    .select('id,title,artist,album,genre,description,duration_seconds,audio_key,audio_url,cover_url,created_at')
     .eq('status', 'published').order('created_at', { ascending:false }).limit(500);
   loaded = true; loadError = Boolean(error);
   if (error) { console.error('Catalogue:', error); notify(`Could not load music: ${error.message || 'Supabase query failed'}`); }
   else tracks = (data || []).map(mapRow);
-  restoreLast(); render();
+  restoreLast();
+  if (renderAfter) render();
 }
 async function loadLibrary() {
   if (!isCloudUser()) {
@@ -619,7 +620,7 @@ async function publishLivePresence() {
   if (!playing) { liveTrackIdentity = ''; liveTrackStartedAt = 0; }
   const payload = {
     presence_version: LIVE_PRESENCE_VERSION,
-    app_version: '3.19.0',
+    app_version: '3.20.0',
     last_seen_at: Date.now(),
     playback_state: playing ? 'playing' : 'idle',
     session_id: liveSessionKey,
@@ -798,12 +799,12 @@ function renderAdminOverview(data) {
   ].join('');
   if (data.metrics?.metrics_note) health.innerHTML += `<p class="muted health-note">${esc(data.metrics.metrics_note)}</p>`;
   const catalogQuery = adminCatalogQuery.trim().toLowerCase();
-  const catalogTracks = (data.tracks || []).filter(t => !catalogQuery || `${t.title||''} ${t.artist||''} ${t.album||''} ${t.genre||''}`.toLowerCase().includes(catalogQuery));
+  const catalogTracks = (data.tracks || []).filter(t => !catalogQuery || `${t.title||''} ${t.artist||''} ${t.album||''} ${t.genre||''} ${t.description||''}`.toLowerCase().includes(catalogQuery));
   const shownCatalogTracks = catalogTracks.slice(0, adminCatalogVisible);
   const catalogCount = $('adminCatalogCount');
   if (catalogCount) catalogCount.textContent = `Showing ${shownCatalogTracks.length} of ${catalogTracks.length} matches`;
   tracksEl.innerHTML = catalogTracks.length ? shownCatalogTracks.map((t) => `<article class="admin-track">
-    <div class="admin-track-info"><strong>${esc(t.title)}</strong><span>${esc(t.artist)} · ${esc(t.album || 'Single')} · ${esc(t.genre || 'Other')}</span><small>${esc(t.status)} · ${Number(t.file_size || 0).toLocaleString()} bytes · ${esc(t.audio_key || 'no R2 key')}</small></div>
+    <div class="admin-track-info"><strong>${esc(t.title)}</strong><span>${esc(t.artist)} · ${esc(t.album || 'Single')} · ${esc(t.genre || 'Other')}</span>${t.description?`<small class="admin-track-description">${esc(t.description)}</small>`:''}<small>${esc(t.status)} · ${Number(t.file_size || 0).toLocaleString()} bytes · ${esc(t.audio_key || 'no R2 key')}</small></div>
     <div class="admin-track-actions"><button class="btn btn-glass btn-small" type="button" data-act="admin-edit" data-id="${esc(t.id)}">Edit</button><button class="btn btn-danger btn-small" type="button" data-act="admin-delete" data-id="${esc(t.id)}">Delete</button></div>
   </article>`).join('') : `<div class="empty"><strong>${catalogQuery?'No matching tracks':'No tracks in catalogue yet'}</strong>${catalogQuery?'Try another title, artist, album or genre.':'Upload your first licensed music file above.'}</div>`;
   if (catalogTracks.length > adminCatalogVisible) {
@@ -827,10 +828,11 @@ function renderAdminOverview(data) {
   const status = $('adminStatus');
   if (status) { status.textContent = data.ok ? 'All critical services responding' : 'One or more services need attention'; status.className = `admin-status ${data.ok ? 'up' : 'down'}`; }
 }
-let adminLoading = false, adminOverviewCachedAt = 0;
+let adminLoading = false, adminRefreshQueued = false, adminOverviewCachedAt = 0;
 async function loadAdminDashboard(force = false) {
   const page=route().name;
-  if (!isAdmin || adminLoading || !['admin','diagnostics'].includes(page)) return;
+  if (!isAdmin || !['admin','diagnostics'].includes(page)) return;
+  if (adminLoading) { if (force) adminRefreshQueued = true; return; }
   if (!force && adminOverview && Date.now()-adminOverviewCachedAt < 120000) {
     if(page==='admin') renderAdminOverview(adminOverview); else renderIntelligenceDashboard(adminOverview);
     return;
@@ -851,29 +853,15 @@ async function loadAdminDashboard(force = false) {
     if(intelligence) intelligence.innerHTML=`<div class="intel-empty glass"><strong>Analytics connection unavailable</strong><span>${esc(error.message)}</span></div>`;
     const statusEl = $('adminStatus');
     if (statusEl) { statusEl.textContent = `Dashboard error: ${error.message}`; statusEl.className = 'admin-status down'; }
-  } finally { adminLoading = false; }
-}
-function refreshAdminSnapshotFromLoadedCatalogue(addedFileBytes=0) {
-  if(!adminOverview)return;
-  const now=new Date(), m=adminOverview.metrics||(adminOverview.metrics={});
-  adminOverview.tracks=tracks.map(t=>({id:t.id,title:t.title,artist:t.artist,album:t.album,genre:t.genre,status:'published',created_at:t.createdAt||now.toISOString(),duration_seconds:t.duration,audio_key:t.audioKey,file_size:t.fileSize,cover_url:t.coverUrl}));
-  const genreCounts={};tracks.forEach(t=>{const genre=String(t.genre||'Other').trim()||'Other';genreCounts[genre]=(genreCounts[genre]||0)+1;});
-  m.genre_distribution=genreCounts;m.tracks_listed=tracks.length;
-  m.tracks_total=Math.max(Number(m.tracks_total||0),tracks.length);
-  m.tracks_published=Math.max(Number(m.tracks_published||0),tracks.length);
-  if(addedFileBytes>0){
-    m.audio_objects_scanned=Number(m.audio_objects_scanned||0)+1;
-    m.audio_bytes_scanned=Number(m.audio_bytes_scanned||0)+Number(addedFileBytes||0);
-    const day=now.toISOString().slice(0,10);const days=Array.isArray(m.uploads_by_day)?m.uploads_by_day:[];
-    const today=days.find(x=>x.date===day||x.label===day.slice(5));
-    if(today)today.count=Number(today.count||0)+1;
+  } finally {
+    adminLoading = false;
+    if (adminRefreshQueued && isAdmin && ['admin','diagnostics'].includes(route().name)) {
+      adminRefreshQueued = false;
+      await loadAdminDashboard(true);
+    }
   }
-  adminOverview.generated_at=now.toISOString();adminOverviewCachedAt=Date.now();
-  if(route().name==='admin')renderAdminOverview(adminOverview);
-  else if(route().name==='diagnostics')renderIntelligenceDashboard(adminOverview);
 }
-
-let adminDetectedArtwork = null, adminDetectedAlbum = null, adminDetectedFile = null, adminDetectionPromise = null;
+let adminDetectedArtwork = null, adminDetectedAlbum = null, adminDetectedFile = null, adminDetectedDuration = 0, adminDetectionPromise = null;
 function setAdminMetaStatus(message, state='info') {
   const node=$('adminMetaStatus'); if(node){node.textContent=message;node.dataset.state=state;}
 }
@@ -933,7 +921,7 @@ async function lookupAudioTags(meta) {
   }catch{return null;}
 }
 async function detectAdminAudio(file, batchAlbumCache = null) {
-  adminDetectedArtwork=null; adminDetectedAlbum=null; adminDetectedFile=null;
+  adminDetectedArtwork=null; adminDetectedAlbum=null; adminDetectedFile=null; adminDetectedDuration=0;
   const preview=$('adminCoverPreview');
   if(preview){preview.src='';preview.classList.add('hidden');}
   if(!file){setAdminMetaStatus('Select an audio file to scan.');return;}
@@ -986,6 +974,7 @@ async function detectAdminAudio(file, batchAlbumCache = null) {
       }
     }
   }
+  adminDetectedDuration=duration;
   const bits=[duration?`Duration ${fmt(duration)}`:'Duration unavailable',file.type||file.name.split('.').pop().toUpperCase(),`${(file.size/1048576).toFixed(1)} MB`];
   const detectedAlbum=$('adminTrackAlbum')?.value.trim();
   setAdminMetaStatus(`Scan complete · ${bits.join(' · ')}${detectedAlbum?` · Album group: ${detectedAlbum}`:''}. Review the detected fields and fill only anything missing.`, 'success');
@@ -1011,7 +1000,7 @@ function formatUploadBytes(bytes) {
   const n=Math.max(0,Number(bytes)||0);
   return n>=1048576?`${(n/1048576).toFixed(1)} MB`:n>=1024?`${(n/1024).toFixed(0)} KB`:`${Math.round(n)} B`;
 }
-async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
+async function uploadAdminTrack(form, fileOverride = null, batchMode = false, batchInfo = null) {
   if (!isAdmin) { notify('Administrator access is required.'); return; }
   const file = fileOverride || $('adminAudioFile')?.files?.[0];
   const title = $('adminTrackTitle')?.value.trim();
@@ -1026,20 +1015,23 @@ async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
   if (!allowed.test(file.name)) { notify('Unsupported audio format. Use MP3, M4A, AAC, WAV, OGG, OPUS, FLAC or WEBM.'); return; }
   const button = $('adminUploadBtn'); if (button) { button.disabled = true; button.textContent = 'Preparing upload…'; }
   const progressWrap=$('sonoraUploadProgress'); if(progressWrap)progressWrap.dataset.state='';
-  updateAdminUploadProgress(0, 'Preparing audio upload', `${file.name} · ${formatUploadBytes(file.size)}`);
+  const batchPrefix = batchInfo ? `Track ${batchInfo.index} of ${batchInfo.total} · ` : '';
+  updateAdminUploadProgress(0, `${batchPrefix}Preparing audio upload`, `${file.name} · ${formatUploadBytes(file.size)}`);
   let uploadStartedAt=0, lastProgressBytes=0, lastProgressAt=0;
   try {
-    let duration = 0;
-    try {
-      const tempUrl = URL.createObjectURL(file);
-      duration = await new Promise((resolve) => {
-        const probe = new Audio(); probe.preload = 'metadata'; probe.src = tempUrl;
-        probe.onloadedmetadata = () => { URL.revokeObjectURL(tempUrl); resolve(Number.isFinite(probe.duration) ? Math.floor(probe.duration) : 0); };
-        probe.onerror = () => { URL.revokeObjectURL(tempUrl); resolve(0); };
-      });
-    } catch { duration = 0; }
+    let duration = adminDetectedFile === file ? adminDetectedDuration : 0;
+    if (adminDetectedFile !== file) {
+      try {
+        const tempUrl = URL.createObjectURL(file);
+        duration = await new Promise((resolve) => {
+          const probe = new Audio(); probe.preload = 'metadata'; probe.src = tempUrl;
+          probe.onloadedmetadata = () => { URL.revokeObjectURL(tempUrl); resolve(Number.isFinite(probe.duration) ? Math.floor(probe.duration) : 0); };
+          probe.onerror = () => { URL.revokeObjectURL(tempUrl); resolve(0); };
+        });
+      } catch { duration = 0; }
+    }
     let coverUrl='';
-    if(adminDetectedArtwork){try{if(button)button.textContent='Saving album artwork…';updateAdminUploadProgress(0,'Saving album artwork','Uploading detected cover image…');coverUrl=await uploadAdminArtwork(adminDetectedArtwork);}catch(error){console.warn('Album artwork upload failed',error);notify('Artwork could not be saved; continuing with audio upload.');}}
+    if(adminDetectedArtwork){try{if(button)button.textContent='Saving album artwork…';updateAdminUploadProgress(0,`${batchPrefix}Saving album artwork`,'Uploading detected cover image…');coverUrl=await uploadAdminArtwork(adminDetectedArtwork);}catch(error){console.warn('Album artwork upload failed',error);notify('Artwork could not be saved; continuing with audio upload.');}}
     const params = new URLSearchParams({
       title, artist,
       album:$('adminTrackAlbum')?.value.trim() || 'Single',
@@ -1056,16 +1048,23 @@ async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
       const speed=(loaded-lastProgressBytes)/elapsed;
       lastProgressBytes=loaded; lastProgressAt=now;
       const detail=stage || `${formatUploadBytes(loaded)} of ${formatUploadBytes(total)}${speed>0?` · ${(speed/1048576).toFixed(2)} MB/s`:''}`;
-      updateAdminUploadProgress(percent,stage||'Uploading audio to private R2',detail);
+      updateAdminUploadProgress(percent,`${batchPrefix}${stage||'Uploading audio to private R2'}`,detail);
       if(button)button.textContent=stage?'Finalizing…':`Uploading ${percent}%…`;
     });
     updateAdminUploadProgress(100,'Upload complete','Audio saved to R2; catalogue record created in Supabase.');
+    if (result.track?.id) {
+      const savedTrack = mapRow(result.track);
+      tracks = [savedTrack, ...tracks.filter(item => String(item.id) !== String(savedTrack.id))];
+    }
     if (!batchMode) form.reset(); adminDetectedArtwork=null; adminDetectedAlbum=null; if(!batchMode)adminDetectedFile=null;
     const coverPreview=$('adminCoverPreview'); if(coverPreview){coverPreview.src='';coverPreview.classList.add('hidden');}
-    setAdminMetaStatus('Track published. Select another audio file to scan its tags.');
+    setAdminMetaStatus('Track published. Select another audio file to scan its tags.','success');
     notify(`Uploaded “${title}” to Cloudflare R2 and published it.`);
-    await loadCatalogue();
-    refreshAdminSnapshotFromLoadedCatalogue(file.size);
+    if (!batchMode) {
+      adminOverviewCachedAt=0;
+      await loadCatalogue({renderAfter:false});
+      await loadAdminDashboard(true);
+    }
     return true;
   } catch (error) {
     console.error('SONORA admin upload:', error);
@@ -1077,34 +1076,70 @@ async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
     if (button && !batchMode) { button.disabled = false; button.innerHTML = `${ic('plus')}Upload and publish`; }
   }
 }
+let adminUploadInProgress = false;
 async function uploadAdminBatch(form) {
+  if (adminUploadInProgress) { notify('An upload is already running. Please let it finish before starting another.'); return; }
   const input = $('adminAudioFile');
   const files = Array.from(input?.files || []);
   if (!files.length) { notify('Choose one or more audio files first.'); return; }
-  if (files.length === 1) { if(adminDetectionPromise)await adminDetectionPromise; if(adminDetectedFile!==files[0]){adminDetectionPromise=detectAdminAudio(files[0]);try{await adminDetectionPromise;}finally{adminDetectionPromise=null;}} await uploadAdminTrack(form, files[0], false); return; }
   const button = $('adminUploadBtn');
-  if (button) { button.disabled = true; button.textContent = `Preparing ${files.length} tracks…`; }
-  let succeeded = 0, failed = 0;
+  adminUploadInProgress = true;
+  if (button) { button.disabled = true; button.textContent = files.length > 1 ? `Preparing ${files.length} tracks…` : 'Preparing upload…'; }
+  if (input) input.disabled = true;
+  let succeeded = 0, failed = 0, catalogueRefreshed = false;
   const batchAlbumCache = new Map();
   try {
+    if (files.length === 1) {
+      const file = files[0];
+      if (adminDetectionPromise) await adminDetectionPromise;
+      if (adminDetectedFile !== file) {
+        adminDetectionPromise = detectAdminAudio(file);
+        try { await adminDetectionPromise; } finally { adminDetectionPromise = null; }
+      }
+      const ok = await uploadAdminTrack(form, file, false);
+      if (ok) succeeded++; else failed++;
+      return;
+    }
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (file.size > 100 * 1024 * 1024 || !/\.(mp3|m4a|mp4|aac|wav|ogg|opus|flac|webm)$/i.test(file.name)) { failed++; notify(`Skipped unsupported or oversized file: ${file.name}`); continue; }
+      if (file.size > 100 * 1024 * 1024 || !/\.(mp3|m4a|mp4|aac|wav|ogg|opus|flac|webm)$/i.test(file.name)) {
+        failed++; notify(`Skipped unsupported or oversized file: ${file.name}`); continue;
+      }
       $('adminTrackTitle').value = ''; $('adminTrackArtist').value = ''; $('adminTrackAlbum').value = ''; $('adminTrackGenre').value = 'Other';
       setAdminMetaStatus(`Track ${i + 1} of ${files.length} · Detecting tags and soundtrack album…`);
       await detectAdminAudio(file,batchAlbumCache);
-      if (button) { button.disabled = true; button.textContent = `Uploading ${i + 1}/${files.length}…`; }
-      const ok = await uploadAdminTrack(form, file, true);
+      if (button) button.textContent = `Uploading ${i + 1}/${files.length}…`;
+      const ok = await uploadAdminTrack(form, file, true, {index:i+1,total:files.length});
       if (ok) succeeded++; else failed++;
     }
+  } catch (error) {
+    failed++;
+    console.error('SONORA batch upload:', error);
+    notify(`Batch upload stopped: ${error.message}`);
   } finally {
-    if (input) input.value = '';
-    adminDetectedFile=null; adminDetectionPromise=null;
-    $('adminTrackTitle').value = ''; $('adminTrackArtist').value = ''; $('adminTrackAlbum').value = '';
-    if ($('sonoraSelectedFile')) $('sonoraSelectedFile').textContent = 'No files selected';
+    if (files.length > 1 && succeeded && !catalogueRefreshed) {
+      try {
+        setAdminMetaStatus(`Uploaded ${succeeded} of ${files.length} files. Refreshing the catalogue…`, 'success');
+        adminOverviewCachedAt=0;
+        await loadCatalogue({renderAfter:false});
+        await loadAdminDashboard(true);
+        catalogueRefreshed = true;
+      } catch (refreshError) {
+        console.error('SONORA post-batch catalogue refresh:', refreshError);
+        notify(`Uploads succeeded, but the catalogue refresh failed: ${refreshError.message}`);
+      }
+    }
+    if (files.length > 1) {
+      if (input) { input.value = ''; input.disabled = false; }
+      adminDetectedFile=null; adminDetectedDuration=0; adminDetectionPromise=null; adminDetectedArtwork=null; adminDetectedAlbum=null;
+      $('adminTrackTitle').value = ''; $('adminTrackArtist').value = ''; $('adminTrackAlbum').value = '';
+      if ($('sonoraSelectedFile')) $('sonoraSelectedFile').textContent = 'No files selected';
+      const preview=$('adminCoverPreview'); if(preview){preview.src='';preview.classList.add('hidden');}
+      setAdminMetaStatus(`Batch finished · ${succeeded} uploaded · ${failed} failed or skipped.`, failed ? 'warning' : 'success');
+      notify(`Batch upload complete: ${succeeded} uploaded, ${failed} failed or skipped.`);
+    } else if (input) input.disabled = false;
     if (button) { button.disabled = false; button.innerHTML = `${ic('plus')}Upload and publish`; }
-    setAdminMetaStatus(`Batch finished · ${succeeded} uploaded · ${failed} failed or skipped.`, failed ? 'warning' : 'success');
-    notify(`Batch upload complete: ${succeeded} uploaded, ${failed} failed or skipped.`);
+    adminUploadInProgress = false;
   }
 }
 
@@ -1114,7 +1149,8 @@ async function deleteAdminTrack(id) {
   try {
     await workerRequest(`/admin/tracks/${encodeURIComponent(id)}`, { method:'DELETE' });
     notify('Track and R2 audio object deleted.');
-    await loadCatalogue(); await loadAdminDashboard();
+    adminOverviewCachedAt=0;
+    await loadCatalogue({renderAfter:false}); await loadAdminDashboard(true);
   } catch (error) { notify(`Delete failed: ${error.message}`); }
 }
 function editAdminTrack(id) {
@@ -1125,18 +1161,28 @@ function editAdminTrack(id) {
     <div class="field"><label for="editArtist">Artist</label><input class="input" id="editArtist" maxlength="120" value="${esc(track.artist)}" required></div>
     <div class="field"><label for="editAlbum">Album</label><input class="input" id="editAlbum" maxlength="160" value="${esc(track.album || 'Single')}"></div>
     <div class="field"><label for="editGenre">Genre</label><input class="input" id="editGenre" maxlength="60" value="${esc(track.genre || 'Other')}"></div>
+    <div class="field"><label for="editDescription">Music description</label><textarea class="input" id="editDescription" rows="4" maxlength="2000" placeholder="Add a short description, credits or context for this track…">${esc(track.description || '')}</textarea><small class="muted">Up to 2,000 characters. Changes appear in the catalogue after saving.</small></div>
     <div class="field"><label for="editStatus">Publication status</label><select class="input" id="editStatus"><option value="published" ${track.status==='published'?'selected':''}>Published</option><option value="draft" ${track.status==='draft'?'selected':''}>Draft</option><option value="removed" ${track.status==='removed'?'selected':''}>Removed</option></select></div>
-    <button class="btn btn-primary" style="width:100%" type="submit">Save track</button>
+    <button class="btn btn-primary" id="adminEditSaveBtn" style="width:100%" type="submit">Save track</button>
   </form>`);
   $('adminEditForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const saveButton=$('adminEditSaveBtn');
+    if(saveButton){saveButton.disabled=true;saveButton.textContent='Saving…';}
     try {
-      await workerRequest(`/admin/tracks/${encodeURIComponent(track.id)}`, {
+      const saved = await workerRequest(`/admin/tracks/${encodeURIComponent(track.id)}`, {
         method:'PATCH', headers:{ 'Content-Type':'application/json' },
-        body:JSON.stringify({ title:$('editTitle').value, artist:$('editArtist').value, album:$('editAlbum').value, genre:$('editGenre').value, status:$('editStatus').value })
+        body:JSON.stringify({ title:$('editTitle').value, artist:$('editArtist').value, album:$('editAlbum').value, genre:$('editGenre').value, description:$('editDescription').value, status:$('editStatus').value })
       });
-      closeDlg(); notify('Track details updated.'); await loadCatalogue(); await loadAdminDashboard();
-    } catch (error) { notify(`Update failed: ${error.message}`); }
+      if (adminOverview && saved.track) adminOverview.tracks=(adminOverview.tracks||[]).map(item=>String(item.id)===String(saved.track.id)?saved.track:item);
+      adminOverviewCachedAt=0;
+      closeDlg(); notify('Track details and description updated.');
+      await loadCatalogue({renderAfter:false});
+      await loadAdminDashboard(true);
+    } catch (error) {
+      if(saveButton){saveButton.disabled=false;saveButton.textContent='Save track';}
+      notify(`Update failed: ${error.message}`);
+    }
   });
 }
 
@@ -1292,7 +1338,7 @@ const views = {
           <div class="upload-foot"><p class="muted">Only upload recordings you own or are licensed to distribute. The service rejects non-audio extensions and enforces upload rate limits.</p><button class="btn btn-primary" id="adminUploadBtn" type="submit">${ic('plus')}Upload and publish</button></div>
         </form>
       </section>
-      <section class="admin-section glass"><div class="section-top"><div><h2>Music catalogue</h2><p>Search, edit, unpublish or permanently delete a track and its R2 object.</p></div><span class="muted" id="adminCatalogCount">Latest 250 records</span></div><div class="catalog-search"><span>⌕</span><input class="input" id="adminCatalogSearch" type="search" value="${esc(adminCatalogQuery)}" placeholder="Search title, artist, album or genre…" aria-label="Search music catalogue"></div><div class="admin-track-list" id="adminTracks"><p class="muted">Loading catalogue…</p></div></section>
+      <section class="admin-section glass"><div class="section-top"><div><h2>Music catalogue</h2><p>Search, edit, unpublish or permanently delete a track and its R2 object.</p></div><span class="muted" id="adminCatalogCount">Latest 250 records</span></div><div class="catalog-search"><span>⌕</span><input class="input" id="adminCatalogSearch" type="search" value="${esc(adminCatalogQuery)}" placeholder="Search title, artist, album, genre or description…" aria-label="Search music catalogue"></div><div class="admin-track-list" id="adminTracks"><p class="muted">Loading catalogue…</p></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Admin activity</h2><p>Recent upload, update and delete actions.</p></div></div><div id="adminAudit" class="admin-audit"><p class="muted">Loading activity…</p></div></section>
       <section class="admin-note"><strong>Reliability & safety</strong><p>Dashboard checks show current service reachability, not a guarantee against outages. Cloudflare CPU, request volume and edge errors remain available in the Worker Metrics and Observability tabs. Uploads are limited to 100 MB per file and 12 per administrator per hour.</p></section>
     </div>`;

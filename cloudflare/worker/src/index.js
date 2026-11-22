@@ -21,7 +21,7 @@
  * Required Worker secret:
  *   SUPABASE_SECRET_KEY (sb_secret_...; never put in GitHub or the browser)
  */
-const VERSION = '3.5.0';
+const VERSION = '3.6.0';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_TRACKS_RETURNED = 250;
 const UPLOADS_PER_HOUR = 12;
@@ -71,6 +71,12 @@ function withCors(response, headers) {
 }
 function cleanString(value, max = 160) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, max);
+}
+function cleanDescription(value, max = 2000) {
+  return String(value ?? '').replace(/\r\n?/g, '\n').trim().slice(0, max);
+}
+function normalizeTrackText(value) {
+  return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 function parseRange(value, size) {
   if (!value) return { start: 0, end: size - 1, status: 200 };
@@ -247,7 +253,7 @@ async function getAdminOverview(env, user) {
   let tracks = [], trackCount = 0, publishedCount = 0, tracksError = null;
   try {
     const [listResponse, publishedResponse] = await Promise.all([
-      supabaseRest(env, `tracks?select=id,title,artist,album,genre,audio_key,duration_seconds,file_size,mime_type,cover_url,status,created_at&order=created_at.desc&limit=${MAX_TRACKS_RETURNED}`, {
+      supabaseRest(env, `tracks?select=id,title,artist,album,genre,description,audio_key,duration_seconds,file_size,mime_type,cover_url,status,created_at&order=created_at.desc&limit=${MAX_TRACKS_RETURNED}`, {
         headers: { Prefer: 'count=exact' }
       }),
       supabaseRest(env, 'tracks?select=id&status=eq.published&limit=1', {
@@ -345,6 +351,18 @@ async function getAdminOverview(env, user) {
     elapsed_ms: Date.now() - started
   };
 }
+async function findDuplicateTrack(env, title, artist) {
+  // Narrow by case-insensitive title first, then compare normalized title + artist.
+  // This keeps the check server-side and catches collisions outside the 500-row browser catalogue.
+  const query = new URLSearchParams({ select:'id,title,artist,status', status:'neq.removed', limit:'100' });
+  query.set('title', `ilike.${String(title).replace(/[%_*]/g, (value) => `\\${value}`)}`);
+  const response = await supabaseRest(env, `tracks?${query.toString()}`);
+  if (!response.ok) throw new Error(`Could not check the existing catalogue for duplicates: ${(await response.text()).slice(0,220)}`);
+  const candidates = await response.json();
+  const normalizedTitle = normalizeTrackText(title), normalizedArtist = normalizeTrackText(artist);
+  return candidates.find(track => normalizeTrackText(track.title) === normalizedTitle && normalizeTrackText(track.artist) === normalizedArtist) || null;
+}
+
 async function adminRoute(request, env, url) {
   const auth = await authenticateAdmin(request, env);
   if (auth.error) return auth.error;
@@ -396,6 +414,12 @@ async function adminRoute(request, env, url) {
       return json({ error: 'The selected file must have an audio content type.' }, 415);
     }
     const storedMime = requestedMime.startsWith('audio/') ? requestedMime : mime;
+    try {
+      const duplicate = await findDuplicateTrack(env, title, artist);
+      if (duplicate) return json({ error:`Possible duplicate blocked: “${duplicate.title}” by ${duplicate.artist} is already in the catalogue.`, duplicate_track_id:duplicate.id }, 409);
+    } catch (error) {
+      return json({ error:String(error?.message||error).slice(0,300) }, 503);
+    }
     let permitted;
     try { permitted = await enforceUploadRate(env, user); }
     catch (e) { return json({ error: e.message }, 503); }
@@ -470,6 +494,7 @@ async function adminRoute(request, env, url) {
     for (const field of ['title', 'artist', 'album', 'genre', 'status']) {
       if (changes[field] !== undefined) update[field] = field === 'status' ? String(changes[field]) : cleanString(changes[field], field === 'genre' ? 60 : field === 'artist' ? 120 : 160);
     }
+    if (changes.description !== undefined) update.description = cleanDescription(changes.description, 2000);
     if (update.status && !['draft', 'published', 'removed'].includes(update.status)) return json({ error: 'Invalid track status.' }, 400);
     if (Object.keys(update).length === 0) return json({ error: 'No editable fields supplied.' }, 400);
     if (update.title === '' || update.artist === '') return json({ error: 'Title and artist cannot be empty.' }, 400);
