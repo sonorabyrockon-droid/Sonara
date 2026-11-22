@@ -1,0 +1,17 @@
+SONORA 3.3 — R2 upload length fix
+
+This update fixes the Cloudflare R2 error:
+"Provided readable stream must have a known length".
+
+What changed:
+- Audio requests with Content-Length now pass through FixedLengthStream(length) before R2.put(). This keeps the upload streamed and preserves the browser's live percentage progress.
+- Audio requests without Content-Length use a bounded ArrayBuffer fallback (maximum 100 MB).
+- Album artwork is buffered as a known-length ArrayBuffer; the artwork endpoint already limits it to 5 MB.
+- Supabase metadata registration, admin authorization, rate limits, and existing UI are preserved.
+
+Deploy:
+1. Replace the repository contents with this ZIP's sonora-github-ready folder contents.
+2. From sonora-github-ready/cloudflare/worker run: npx wrangler deploy
+3. Refresh SONORA, then retry a small MP3 upload.
+
+No Supabase SQL change is required for this particular R2 stream-length error.
