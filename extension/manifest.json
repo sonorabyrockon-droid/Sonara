@@ -1,8 +1,0 @@
-{
-  "manifest_version": 3,
-  "name": "SONORA — Music Player",
-  "version": "1.0.0",
-  "description": "Open your SONORA music library in a dedicated browser tab.",
-  "action": { "default_title": "Open SONORA", "default_popup": "popup.html" },
-  "permissions": []
-}
