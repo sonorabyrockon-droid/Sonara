@@ -41,3 +41,11 @@
 - Explicit boundary note for Cloudflare/Supabase provider usage metrics that require management/analytics API credentials.
 - Embedded audio tag and cover-art detection, duration extraction, best-effort online metadata lookup, and administrator-only cover upload to R2.
 - `tracks.cover_url` populated on new uploads; existing schema already includes this column.
+
+
+## v3.13 live presence follow-up
+- Presence channel starts after auth/session restoration; Realtime receives the restored access token when present.
+- Presence state parsing is defensive, deduplicated by session, refreshes on playback/focus/visibility/auth changes and retries timed-out subscriptions.
+- Admin displays active sessions separately from connected sessions and exposes last-sync diagnostics.
+- The existing channel is public to support browser announcements without backend changes; presence payloads must not include email/IP or sensitive profile data. Admin-only channel authorization needs backend work and remains out of scope.
+- A real two-browser test against the hosted Supabase project is still required after deploy.

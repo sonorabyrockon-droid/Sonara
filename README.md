@@ -176,3 +176,7 @@ Run `sql/admin-preferences-migration.sql` in Supabase SQL Editor. It adds the pe
 ### Deploy
 
 Commit and push the full contents of this project folder to the existing GitHub Pages repository, preserving the repository's `/Aries-Music-/` base path. No Cloudflare Worker change is required for these frontend features. After deployment, open SONORA once online so the service worker can cache the app shell.
+
+
+### Live presence v3.13 notes
+Realtime presence initializes only after the Supabase session has been restored. The admin view shows both active listening sessions and connected browser sessions plus last-sync diagnostics. All browsers that should appear must load a frontend version that publishes to the shared `sonora-live-listeners` topic. Because the current channel remains public to avoid requiring backend authorization changes, never publish emails, IP addresses or sensitive profile data through its presence payload. A two-browser deployment check is required; hosted Realtime authorization or availability cannot be proven by a static code audit.

@@ -1,0 +1,28 @@
+SONORA 3.13 — LIVE PRESENCE AUDIT & FRONTEND FIX
+
+Scope
+- Frontend-only corrections in app.js, index.html, styles.css and sw.js.
+- No Cloudflare Worker, SQL, database schema, secrets, API routes or deployment files were changed.
+
+Main fixes
+1. Realtime presence now starts after Supabase restores the current auth session. The current access token is explicitly passed to the Realtime client when available.
+2. The existing shared topic `sonora-live-listeners` is retained for compatibility with already deployed clients. The channel's public mode is explicit because each browser must publish a presence state.
+3. Snapshot parsing now handles array/object presence metadata, deduplicates by session ID, normalises older track fields and applies a two-minute stale-data guard.
+4. Live playback is republished after actual playback starts, on focus/visibility resume, during the 15-second heartbeat and when the account state changes.
+5. Failed/timed-out subscriptions now show a useful status and receive a controlled reconnect attempt. Presence is untracked when a page is being unloaded.
+6. The admin view distinguishes active listeners from connected browser sessions, with a last-sync diagnostic. User names no longer fall back to exposing the email local-part; guests remain labelled Guest.
+7. Asset URLs and service-worker cache version are incremented to 3.13.0.
+
+Data and privacy boundaries
+- This dashboard counts active browser listening sessions, not unique verified people. Multiple tabs/devices from one account count as multiple sessions.
+- Realtime presence only works for visitors running a frontend build that publishes to this topic. Older pages that do not publish presence cannot appear. Visitors must refresh/reload after deployment.
+- The presence channel remains public so every client can publish without backend changes. Do not put email addresses, IP addresses, or other sensitive profile data in this public presence payload. This frontend sends a display name only, falling back to Member/Guest. Admin-only Realtime access would require a server-side private-channel authorization policy, which is outside this frontend-only change.
+- This environment cannot verify a real two-device Realtime session against the hosted Supabase project. Deploy and perform the two-browser test below.
+
+Two-browser verification
+1. Deploy the full contents of `sonora-github-ready` to the existing site root.
+2. Open the site in Browser A, sign in as a non-admin user or continue as Guest, play a published track, and leave the player running.
+3. Open the site in Browser B using the administrator account and open Admin dashboard > Now playing across SONORA.
+4. Within the Realtime sync interval, Browser B should show Browser A's display name/Guest label, track title and artist. The diagnostic should show at least two connected sessions (admin + listener) and at least one active listener (if both browsers are playing, it will show two).
+5. Pause Browser A. Its active count should fall while the connected-session count remains until that browser closes/leaves.
+6. If Browser B says OFFLINE/CHANNEL_ERROR/TIMED_OUT, inspect the diagnostic and browser console. Hosted Supabase Realtime availability/authorization settings may need an administrator-side change; this package deliberately does not alter server settings.

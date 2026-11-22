@@ -647,3 +647,7 @@ dialog::backdrop{background:rgba(8,5,20,.5);backdrop-filter:blur(6px)}
 @media(prefers-reduced-motion:reduce){.intel-now-eq i,.intel-loading-pulse{animation:none}}
 
 .intel-live-label.offline{color:var(--muted)}.intel-live-label.offline i{background:var(--muted);box-shadow:none}
+
+/* v3.13 live-presence diagnostics */
+.live-presence-diagnostic{display:block;padding:0 18px 12px;color:var(--muted);font-size:11px;line-height:1.45;overflow-wrap:anywhere}
+.live-listener-kpi span{max-width:min(62vw,520px);line-height:1.4}

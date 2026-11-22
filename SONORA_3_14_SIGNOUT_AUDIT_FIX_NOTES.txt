@@ -1,0 +1,30 @@
+SONORA 3.14 — SIGN-OUT AUDIT & FIX
+
+Audit result
+- The Settings page contained the only user-facing Sign out action, correctly wired through the delegated click handler in #view.
+- The handler called `sb.auth.signOut()` without a scope. Supabase JavaScript defaults this to `global`, which can sign the same account out on other devices.
+- Sign-out did not pause active audio or explicitly untrack the browser's Realtime presence entry.
+- Pending playback analytics could still be in flight when authentication was cleared.
+- Signed-out state reset the admin flag, but did not clear cached admin overview and in-memory preference drafts.
+
+Fixes
+1. Sign out now calls `sb.auth.signOut({ scope: 'local' })`, ending only the current browser session.
+2. The player is paused before auth removal, the in-flight play-event creation/update is allowed to settle, and pending listening seconds are flushed where possible.
+3. The current browser presence entry is untracked and local presence publishing is suppressed after sign-out. Signing in again or choosing Continue as guest re-enables presence.
+4. The same cleanup runs for sign-outs received from another tab/session event.
+5. The button disables and displays "Signing out…" during the operation; errors restore the button and show a message.
+6. The app verifies that the local session is actually gone before reporting success. A best-effort remote token revocation warning is distinguished from a still-active local session.
+7. Signed-out state clears admin-only in-memory data, preference drafts, and the password field while preserving the guest library stored on the device.
+8. Frontend asset/cache version bumped to 3.14.0.
+
+Manual verification after deployment
+- Sign in on Browser A and Browser B with the same account. Sign out on Browser A; Browser B should remain signed in.
+- Confirm Browser A pauses playback, leaves the live listener count, returns to the sign-in screen, and its Sign out button cannot be double-submitted.
+- Sign back in on Browser A and confirm account preferences/library load again.
+- Choose Continue as guest and verify the app can publish a guest presence session when guest playback begins.
+- Trigger a failed/offline sign-out and confirm the UI reports an error unless the local session was in fact removed.
+
+Scope protection
+- Only app.js, index.html, sw.js and this note were changed in this update.
+- Cloudflare Worker code, SQL files, schema, config.js, secrets, API routes and deployment configuration were not modified.
+- Cross-device behavior is not live-tested against the hosted Supabase project in this environment.
