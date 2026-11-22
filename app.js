@@ -42,7 +42,7 @@ let preferenceDraft = { genres:[], moods:[] };
 let preferenceNameDraft = '';
 let autoplayDraft = store.get('sonora-autoplay-next', true);
 let adminOverview = null, adminLoadError = '', adminCatalogQuery = '';
-let livePresenceChannel = null, livePresenceReady = false, livePresenceStatus = 'CONNECTING', liveListenerSnapshot = [];
+let livePresenceChannel = null, livePresenceReady = false, livePresenceStatus = 'CONNECTING', liveListenerSnapshot = [], liveTrackStartedAt = 0, liveTrackIdentity = '';
 const liveSessionKey = `sonora-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 let pendingPlaySeconds = 0, sessionPlayedSeconds = 0, currentPlayEventId = null, playEventCreating = false, playFinishRequested = false, lastPlaybackPosition = null, lastPlaybackTrackId = null, playFlushBusy = false;
 let tracks = [];
@@ -167,10 +167,10 @@ function albumEntries() {
   });
   return [...grouped.values()].sort((a,b) => a.name.localeCompare(b.name));
 }
-const albumById = (id) => albumEntries().find((album) => album.id === id);
+const albumById = (id) => { const wanted=albumKey(id); return albumEntries().find((album) => album.id === wanted || albumGroupKey(album.name) === wanted); };
 function collectionArtwork(items, label = 'Collection') {
   const chosen = (items || []).slice(0,4);
-  const tiles = chosen.map((track) => `<span class="collection-tile" style="--h1:${hue(track.id)};--h2:${(hue(track.id)+60)%360}">${track.coverUrl ? `<img src="${esc(track.coverUrl)}" alt="" loading="lazy">` : `<b>${esc((track.title || 'S').slice(0,1))}</b>`}</span>`).join('');
+  const tiles = chosen.map((track) => `<span class="collection-tile" style="--h1:${hue(track.id)};--h2:${(hue(track.id)+24)%360}">${track.coverUrl ? `<img src="${esc(track.coverUrl)}" alt="" loading="lazy">` : `<b>${esc((track.title || 'S').slice(0,1))}</b>`}</span>`).join('');
   return `<span class="collection-art" role="img" aria-label="${esc(label)} artwork">${tiles || '<span class="collection-art-empty">♫</span>'}</span>`;
 }
 const ctxList = (ctx) => {
@@ -331,7 +331,7 @@ async function verifyAdminAccess() {
     console.info('SONORA admin access not granted:', error.message);
   }
   refreshAccount();
-  if (route().name === 'admin' || route().name === 'tests') render();
+  if (route().name === 'admin' || route().name === 'diagnostics') render();
 }
 function healthLine(label, check) {
   const ok = Boolean(check?.ok);
@@ -353,14 +353,18 @@ function renderLivePresence() {
   const status=$('adminLiveStatus'), metric=$('adminLiveMetric'), note=$('adminLiveMetricNote'), target=$('adminLiveTracks');
   if (status) {
     const online=livePresenceReady;
-    status.textContent=online?'LIVE':(['CHANNEL_ERROR','TIMED_OUT','CLOSED'].includes(livePresenceStatus)?'UNAVAILABLE':'CONNECTING');
+    status.textContent=online?'LIVE':(['CHANNEL_ERROR','TIMED_OUT','CLOSED'].includes(livePresenceStatus)?'OFFLINE':livePresenceStatus==='CONNECTING'?'CONNECTING':'WAITING');
     status.className=`storage-pill ${online?'live-pill':''}`;
   }
   const count=livePresenceReady?liveListenerSnapshot.length:null;
   if (metric) metric.textContent=count==null?'—':count.toLocaleString();
   if (note) note.textContent=count==null?'Realtime presence not connected':`${count} active listening ${count===1?'session':'sessions'}`;
+  const insightStatus=$('insightLiveStatus'), insightCount=$('insightListenerCount'), insightUsers=$('insightLiveUsers');
+  if(insightStatus){insightStatus.textContent=livePresenceReady?'LIVE':livePresenceStatus;insightStatus.className=`storage-pill ${livePresenceReady?'live-pill':''}`;}
+  if(insightCount)insightCount.textContent=count==null?'—':count.toLocaleString();
+  if(insightUsers){insightUsers.innerHTML=count==null?`<div class="chart-empty">Live presence is not connected. Confirm the existing Supabase Realtime channel.</div>`:!liveListenerSnapshot.length?`<div class="chart-empty">No one is listening right now.</div>`:liveListenerSnapshot.map((listener)=>`<div class="audience-user-row"><span class="audience-avatar">${esc(String(listener.listener_name||'Guest').trim().slice(0,1).toUpperCase())}</span><span><strong>${esc(listener.listener_name||'Guest')}</strong><small>${esc(listener.listener_type||'Guest')} · ${esc(listener.title||'Unknown track')} — ${esc(listener.artist||'Unknown artist')}${listener.started_at?` · ${Math.max(0,Math.floor((Date.now()-Number(listener.started_at))/60000))} min in session`:''}</small></span><b class="audience-playing">PLAYING</b></div>`).join('');}
   if (!target) return;
-  if (count==null) { target.innerHTML='<div class="chart-empty">Live listener presence is unavailable. Check whether Supabase Realtime is enabled for this project.</div>'; return; }
+  if (count==null) { target.innerHTML=`<div class="chart-empty"><strong>Live presence: ${esc(livePresenceStatus)}</strong><br>Realtime has not subscribed. Check the browser console and Supabase Realtime availability; no server changes were made.</div>`; return; }
   if (!liveListenerSnapshot.length) { target.innerHTML='<div class="live-empty"><span class="live-empty-pulse"></span><div><strong>No active listeners right now</strong><small>Tracks appear here while a listener is actively playing music.</small></div></div>'; return; }
   const grouped=new Map();
   liveListenerSnapshot.forEach(listener=>{
@@ -374,14 +378,20 @@ function renderLivePresence() {
 async function publishLivePresence() {
   if (!livePresenceChannel || !livePresenceReady) return;
   const playing=Boolean(active?.id && !audio.paused);
+  const identity=playing?String(active.id):'';
+  if(playing && identity!==liveTrackIdentity){liveTrackIdentity=identity;liveTrackStartedAt=Date.now();}
+  if(!playing){liveTrackIdentity='';liveTrackStartedAt=0;}
   const payload={
     session_id:liveSessionKey,
+    listener_name:user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || 'Guest',
+    listener_type:user?'Signed in':'Guest',
     is_listening:playing,
     track_id:playing?String(active.id):null,
     title:playing?String(active.title||'').slice(0,160):'',
     artist:playing?String(active.artist||'').slice(0,120):'',
     album:playing?String(active.album||'').slice(0,160):'',
     cover_url:playing?safeUrl(active.coverUrl||''):'',
+    started_at:playing?liveTrackStartedAt:null,
     updated_at:Date.now()
   };
   try { await livePresenceChannel.track(payload); }
@@ -445,7 +455,8 @@ function renderAdminAnalytics(data) {
   const target=$('adminAnalytics'), insights=$('adminInsights');
   if (!target || !insights) return;
   const m=data.metrics||{}, checks=data.checks||{};
-  const genres=Object.entries(m.genre_distribution||{}).sort((a,b)=>b[1]-a[1]).slice(0,7).map(([name,count])=>({name,count}));
+  const allGenres=Object.entries(m.genre_distribution||{}).sort((a,b)=>b[1]-a[1]).map(([name,count])=>({name,count}));
+  const genres=allGenres.slice(0,7);
   const uploads=m.uploads_by_day||[];
   const latencies=[
     {name:'Worker',ms:checks.cloudflare_worker?.latency_ms},
@@ -460,9 +471,9 @@ function renderAdminAnalytics(data) {
   target.innerHTML=`
     <article class="chart-card glass"><div class="chart-head"><strong>Catalogue mix</strong><span>${total.toLocaleString()} tracks</span></div>${svgDonutChart(genres,'name','count')}<p class="chart-foot">Top ${genres.length} genres from the current catalogue.</p></article>
     <article class="chart-card glass"><div class="chart-head"><strong>Upload momentum</strong><span>Last 7 days</span></div>${svgUploadTrend(uploads)}<p class="chart-foot">New catalogue records created per day.</p></article>
-    <article class="chart-card glass"><div class="chart-head"><strong>Listener engagement</strong><span>Lifetime snapshot</span></div><div class="engagement-metrics"><div><small>Total plays</small><b>${plays.toLocaleString()}</b></div><div><small>Listening time</small><b>${(seconds/3600).toFixed(1)} hrs</b></div><div><small>Average play session</small><b>${avgSeconds?`${Math.floor(avgSeconds/60)}m ${Math.round(avgSeconds%60)}s`:'—'}</b></div></div><p class="chart-foot">Based on recorded playback events. An average is shown only when play events exist.</p></article>
+    <article class="chart-card glass"><div class="chart-head"><strong>Listener engagement</strong><span>Lifetime snapshot</span></div>${svgBarChart([{name:'Play events',value:plays},{name:'Listening hours',value:seconds/3600},{name:'Avg session (min)',value:avgSeconds/60}],'name','value','chart-bar-engagement')}<p class="chart-foot">Based on recorded playback events. An average is shown only when play events exist.</p></article>
     <article class="chart-card glass"><div class="chart-head"><strong>Service response time</strong><span>Lower is better · ms</span></div>${svgBarChart(latencies.map(x=>({name:x.name,ms:x.ms??0})).filter(x=>x.ms>0),'name','ms','chart-bar-latency')}<p class="chart-foot">Worker ${checks.cloudflare_worker?.latency_ms??'—'} ms · Supabase ${checks.supabase_database?.latency_ms??'—'} ms · R2 ${checks.r2_storage?.latency_ms??'—'} ms</p></article>
-    <article class="chart-card glass"><div class="chart-head"><strong>Storage & publishing</strong><span>Current snapshot</span></div><div class="metric-pair"><div><small>R2 scanned</small><b>${(storage/1024/1024).toFixed(1)} MB</b></div><div><small>Publish rate</small><b>${total?Math.round(published/total*100):0}%</b></div></div><div class="mini-progress"><i style="width:${total?Math.max(0,Math.min(100,published/total*100)):0}%"></i></div><p class="chart-foot">${Number(m.audio_objects_scanned||0).toLocaleString()} objects scanned${m.r2_scan_truncated?' · scan capped at 50,000 objects':''}</p></article>`;
+    <article class="chart-card glass"><div class="chart-head"><strong>Storage & publishing</strong><span>Current snapshot</span></div><div class="metric-pair"><div><small>R2 scanned</small><b>${(storage/1024/1024).toFixed(1)} MB</b></div><div><small>Publish rate</small><b>${total?Math.round(published/total*100):0}%</b></div></div><div class="mini-progress"><i style="width:${total?Math.max(0,Math.min(100,published/total*100)):0}%"></i></div><p class="chart-foot">${Number(m.audio_objects_scanned||0).toLocaleString()} objects scanned${m.r2_scan_truncated?' · scan capped at 50,000 objects':''}</p></article>` + (allGenres.length>7?`<details class="chart-more glass"><summary>Show more catalogue insights · ${allGenres.length-7} more genres</summary>${svgBarChart(allGenres.slice(7),'name','count','chart-bar-engagement')}</details>`:'');
   const failed=(checks.supabase_tables||[]).filter(x=>!x.ok);
   const slow=latencies.filter(x=>x.ms>=500);
   const notes=[];
@@ -490,14 +501,14 @@ function renderDeepDiagnostics(data) {
 function renderAdminOverview(data) {
   adminOverview = data;
   const stats = $('adminStats'), health = $('adminHealth'), tracksEl = $('adminTracks'), auditEl = $('adminAudit');
-  if (!stats || !health || !tracksEl || !auditEl) return;
+  if (!health || !tracksEl || !auditEl) return;
   renderAdminAnalytics(data); renderDeepDiagnostics(data);
   const m = data.metrics || {};
   const bytes = Number(m.audio_bytes_scanned || 0);
   const size = bytes > 1024**3 ? `${(bytes/1024**3).toFixed(2)} GB` : bytes > 1024**2 ? `${(bytes/1024**2).toFixed(1)} MB` : `${(bytes/1024).toFixed(0)} KB`;
   const listeningSeconds = Number(m.total_play_seconds || 0);
   const listeningTime = listeningSeconds >= 3600 ? `${(listeningSeconds/3600).toFixed(1)} hrs` : `${Math.floor(listeningSeconds/60)} min`;
-  stats.innerHTML = [
+  if (stats) stats.innerHTML = [
     ['Live listeners', livePresenceReady ? liveListenerSnapshot.length.toLocaleString() : '—'],
     ['Total plays', Number(m.total_play_events || 0).toLocaleString()],
     ['Total listening time', listeningTime],
@@ -527,13 +538,15 @@ function renderAdminOverview(data) {
   const status = $('adminStatus');
   if (status) { status.textContent = data.ok ? 'All critical services responding' : 'One or more services need attention'; status.className = `admin-status ${data.ok ? 'up' : 'down'}`; }
 }
-let adminLoading = false;
-async function loadAdminDashboard() {
+let adminLoading = false, adminOverviewCachedAt = 0;
+async function loadAdminDashboard(force = false) {
   if (!isAdmin || adminLoading || route().name !== 'admin') return;
+  if (!force && adminOverview && Date.now()-adminOverviewCachedAt < 120000) { renderAdminOverview(adminOverview); return; }
   adminLoading = true;
   const status = $('adminStatus'); if (status) status.textContent = 'Checking services…';
   try {
     const data = await workerRequest('/admin/overview');
+    adminOverviewCachedAt=Date.now();
     renderAdminOverview(data);
   } catch (error) {
     adminLoadError = error.message;
@@ -689,6 +702,9 @@ async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
   const artist = $('adminTrackArtist')?.value.trim();
   if (!file) { notify('Choose an audio file first.'); return; }
   if (!title || !artist) { notify('Automatic tags could not identify the title or artist. Please fill only the missing required fields.'); return; }
+  const norm=(v)=>String(v||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const duplicate=tracks.find(t=>norm(t.title)===norm(title)&&norm(t.artist)===norm(artist));
+  if(duplicate){ notify(`Possible duplicate blocked: “${duplicate.title}” by ${duplicate.artist} is already in the catalogue. Check the existing track before uploading again.`); return; }
   if (file.size > 100 * 1024 * 1024) { notify('Direct upload limit is 100 MB per track.'); return; }
   const allowed = /\.(mp3|m4a|mp4|aac|wav|ogg|opus|flac|webm)$/i;
   if (!allowed.test(file.name)) { notify('Unsupported audio format. Use MP3, M4A, AAC, WAV, OGG, OPUS, FLAC or WEBM.'); return; }
@@ -733,7 +749,7 @@ async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
     setAdminMetaStatus('Track published. Select another audio file to scan its tags.');
     notify(`Uploaded “${title}” to Cloudflare R2 and published it.`);
     await loadCatalogue();
-    await loadAdminDashboard();
+    if(adminOverview){ adminOverview.tracks=tracks.map(t=>({id:t.id,title:t.title,artist:t.artist,album:t.album,genre:t.genre,status:'published',created_at:new Date().toISOString(),duration_seconds:t.duration})); renderAdminOverview(adminOverview); }
     return true;
   } catch (error) {
     console.error('SONORA admin upload:', error);
@@ -823,7 +839,7 @@ const views = {
     ${tracks.length > 1 ? `<div class="sec-head"><div><h2>Fresh releases</h2><p>Recently added to the catalogue.</p></div></div>
       <div class="grid">${homeTracks.slice(1, 9).map((t) => card(t, 'home')).join('')}</div>` : ''}
     ${genres().length ? `<div class="sec-head"><div><h2>Browse by genre</h2></div></div><div class="chips">${genres().map((g) => `<button class="chip" data-act="genre" data-genre="${esc(g)}">${esc(g)}</button>`).join('')}</div>` : ''}
-    ${albumEntries().length ? `<div class="sec-head"><div><h2>Albums & soundtracks</h2><p>Automatically grouped from catalogue metadata.</p></div><a class="link" href="#/albums">View all</a></div><div class="grid collection-grid">${albumEntries().slice(0,4).map(a=>`<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(a.tracks,a.name)}<span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length===1?'track':'tracks'}</span></a>`).join('')}</div>` : ''}
+    ${albumEntries().length ? `<div class="sec-head"><div><h2>Albums & soundtracks</h2><p>Automatically grouped from catalogue metadata.</p></div><a class="link" href="#/albums">View all</a></div><div class="grid collection-grid">${albumEntries().slice(0,4).map(a=>`<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" data-act="open-album" data-album-id="${esc(a.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(a.tracks,a.name)}<span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length===1?'track':'tracks'}</span></a>`).join('')}</div>` : ''}
     ${tracks.length ? `<div class="sec-head"><div><h2>All tracks</h2><p>${tracks.length} in the catalogue.</p></div><button class="link" data-act="go" data-to="search">Open search</button></div>${rows(tracks.slice(0, 10), 'home')}` : ''}</div>`;
   },
   search() {
@@ -860,7 +876,7 @@ const views = {
   albums() {
     const albums = albumEntries();
     return `<div class="page library-page"><div class="kicker">YOUR LIBRARY</div><h1>Albums & soundtracks</h1><p class="lede">Tracks with matching album or movie soundtrack metadata are automatically grouped here.</p>
-      ${albums.length ? `<div class="grid collection-grid">${albums.map((album) => `<a class="card collection-card" href="#/album/${encodeURIComponent(album.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(album.tracks, album.name)}<span class="t">${esc(album.name)}</span><span class="s">${album.tracks.length} ${album.tracks.length===1?'track':'tracks'} · ${[...new Set(album.tracks.map(t=>t.artist))].length>1?'Various artists':esc(album.tracks[0]?.artist||'Album')}</span></a>`).join('')}</div>` : empty('No albums yet', 'As tracks are added with album or movie soundtrack metadata, SONORA groups them into album collections automatically.')}</div>`;
+      ${albums.length ? `<div class="grid collection-grid">${albums.map((album) => `<a class="card collection-card" href="#/album/${encodeURIComponent(album.id)}" data-act="open-album" data-album-id="${esc(album.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(album.tracks, album.name)}<span class="t">${esc(album.name)}</span><span class="s">${album.tracks.length} ${album.tracks.length===1?'track':'tracks'} · ${[...new Set(album.tracks.map(t=>t.artist))].length>1?'Various artists':esc(album.tracks[0]?.artist||'Album')}</span></a>`).join('')}</div>` : empty('No albums yet', 'As tracks are added with album or movie soundtrack metadata, SONORA groups them into album collections automatically.')}</div>`;
   },
   album(id) {
     const album = albumById(id);
@@ -894,7 +910,7 @@ const views = {
         <div class="settings-card-head"><div><h2>Account</h2><p>Signed in with Supabase authentication.</p></div><span class="settings-avatar">${esc((user?.email || 'S').slice(0,1).toUpperCase())}</span></div>
         <div class="settings-detail"><span>Email address</span><strong>${esc(user?.email || 'Guest')}</strong></div>
         <div class="settings-detail"><span>Account status</span><strong>${user?.email_confirmed_at || user?.confirmed_at ? 'Email confirmed' : 'Confirmation may be pending'}</strong></div>
-        ${isAdmin ? `<div class="admin-callout"><div><strong>SONORA administration</strong><p>Manage music, view service health, review platform activity and run diagnostics.</p></div><div class="admin-shortcuts"><a class="btn btn-primary" href="#/admin">Admin dashboard</a><a class="btn btn-glass" href="#/tests">System tests</a></div></div>` : ''}
+        ${isAdmin ? `<div class="admin-callout"><div><strong>SONORA administration</strong><p>Manage music, view service health, review platform activity and run diagnostics.</p></div><div class="admin-shortcuts"><a class="btn btn-primary" href="#/admin">Admin dashboard</a><a class="btn btn-glass" href="#/diagnostics">Music & Audience Intelligence</a></div></div>` : ''}
         <div class="settings-actions"><button class="btn btn-glass" type="button" data-act="password-reset">Send password reset email</button></div>
       </section>
       <section class="settings-card glass">
@@ -927,20 +943,17 @@ const views = {
         <div class="playback-quality"><span class="quality-icon">♫</span><div><strong>Original audio quality</strong><small>SONORA streams the uploaded audio without changing its source quality.</small></div><span class="quality-tag">SOURCE</span></div>
         <div class="settings-actions"><button class="btn btn-primary" type="button" data-act="save-appearance">${ic('check')}Save appearance & playback</button><span class="muted settings-save-note">${isCloudUser() ? 'Appearance and autoplay sync to your account. Volume is saved on this device.' : 'Appearance, autoplay and volume are saved on this device. Sign in to sync across devices.'}</span></div>
       </section>
-      <section class="settings-card glass">
-        <h2>Install SONORA</h2><p class="muted">Install the app on a phone, tablet or computer for an app-like experience. On supported browsers, use the install button; otherwise use your browser’s “Add to Home Screen” or “Install page as app” option.</p>
-        <div class="settings-actions"><button class="btn btn-primary" id="installAppBtn" type="button">Install SONORA</button><a class="btn btn-glass" href="extension/" target="_blank" rel="noopener">Desktop Chrome extension guide</a></div>
-      </section>
+
       <section class="settings-danger glass"><div><h2>Sign out</h2><p class="muted">Your cloud library remains saved to your account.</p></div><button class="btn btn-danger" type="button" data-act="signout">${ic('user')}Sign out</button></section>
     </div>`;
   },
   admin() {
     if (!isAdmin) return `<div class="page">${empty('Administrator access required','Sign in with the allowlisted and email-confirmed SONORA administrator account to open this dashboard.')}</div>`;
     return `<div class="page admin-page">
-      <div class="admin-heading"><div><div class="kicker">SONORA CONTROL ROOM</div><h1>Admin dashboard</h1><p class="lede">Upload and manage music, monitor Supabase and Cloudflare service health, and inspect administrative activity.</p></div><div class="admin-heading-actions"><a class="btn btn-glass" href="#/tests">${ic('activity')}System tests</a><button class="btn btn-glass" type="button" data-act="admin-refresh">${ic('activity')}Refresh status</button></div></div>
+      <div class="admin-heading"><div><div class="kicker">SONORA CONTROL ROOM</div><h1>Admin dashboard</h1><p class="lede">Upload and manage music, monitor Supabase and Cloudflare service health, and inspect administrative activity.</p></div><div class="admin-heading-actions"><a class="btn btn-glass" href="#/diagnostics">${ic('activity')}Music & Audience Intelligence</a><button class="btn btn-glass" type="button" data-act="admin-refresh">${ic('activity')}Refresh status</button></div></div>
       <div class="admin-welcome glass"><div><strong>Administrator verified</strong><span>${esc(user?.email || '')}</span></div><span class="admin-status" id="adminStatus">Loading service health…</span></div>
-      <div class="admin-stats" id="adminStats"><article class="admin-stat glass"><span>Loading dashboard</span><strong>—</strong></article></div><div class="r2-storage-estimate glass" id="adminStorageEstimate"><b>Cloudflare R2 storage estimate</b><span>Loading bucket usage…</span></div>
-      <section class="admin-section glass live-listening-section"><div class="section-top"><div><h2>Now playing across SONORA</h2><p>Live listening sessions, updated through the existing Supabase Realtime connection. No listener email or personal profile is exposed here.</p></div><span class="storage-pill" id="adminLiveStatus">CONNECTING</span></div><div class="admin-live-tracks" id="adminLiveTracks"><div class="chart-empty">Connecting to live listening presence…</div></div></section>
+      <div class="r2-storage-estimate glass" id="adminStorageEstimate"><b>Cloudflare R2 storage estimate</b><span>Loading bucket usage…</span></div>
+      <section class="admin-section glass live-listening-section"><div class="section-top"><div><h2>Now playing across SONORA</h2><p>Live listening sessions, updated through the existing Supabase Realtime connection. No listener email or personal profile is exposed here.</p><div class="live-listener-kpi"><strong id="adminLiveMetric">—</strong><span id="adminLiveMetricNote">Waiting for Realtime presence</span></div></div><span class="storage-pill" id="adminLiveStatus">CONNECTING</span></div><div class="admin-live-tracks" id="adminLiveTracks"><div class="chart-empty">Connecting to live listening presence…</div></div></section>
       <section class="admin-section glass analytics-section"><div class="section-top"><div><h2>Platform intelligence</h2><p>Catalogue mix, weekly upload momentum, listener engagement, storage and service response times.</p></div><span class="storage-pill">LIVE SNAPSHOT</span></div><div class="admin-analytics-grid" id="adminAnalytics"><div class="chart-card glass">Loading analytics…</div></div><div class="admin-insights" id="adminInsights"></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Service health & performance</h2><p>Live probes for authentication, database access, Cloudflare Worker and private R2 storage.</p></div></div><div class="admin-health" id="adminHealth"><p class="muted">Checking services…</p></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Deep diagnostics</h2><p>Read-only checks against the core Supabase tables and a sample R2 object. Refresh to re-run.</p></div></div><div class="admin-deep-grid" id="adminDeepDiagnostics"><p class="muted">Waiting for diagnostic results…</p></div><p class="muted health-note" id="adminCloudflareLimits"></p></section>
@@ -968,40 +981,43 @@ const views = {
       <section class="admin-note"><strong>Reliability & safety</strong><p>Dashboard checks show current service reachability, not a guarantee against outages. Cloudflare CPU, request volume and edge errors remain available in the Worker Metrics and Observability tabs. Uploads are limited to 100 MB per file and 12 per administrator per hour.</p></section>
     </div>`;
   },
-  tests() {
+  diagnostics() {
     return `<div class="page test-page">
-      <div class="test-title"><div><div class="kicker">SONORA DIAGNOSTICS</div><h1>System Test</h1><p class="lede">Check the website, Supabase, account permissions, Cloudflare Worker, R2 storage and real audio streaming. Tests show errors here instead of hiding them in the console.</p></div>
-      <button class="btn btn-primary" id="runTestsBtn" data-act="run-tests" type="button">${ic('activity')}Run all tests</button></div>
-      <div class="test-summary glass" id="testSummary"><strong>Not tested yet</strong><span>Run all tests to check the current setup.</span></div>
+      <div class="test-title"><div><div class="kicker">SONORA MUSIC INTELLIGENCE</div><h1>Music & Audience Intelligence</h1><p class="lede">A live view of listening sessions, audience activity, catalogue quality and platform health.</p></div>
+      <button class="btn btn-primary" id="runTestsBtn" data-act="run-tests" type="button">${ic('activity')}Run checks again</button></div>
+      <section class="audience-live glass"><div class="section-top"><div><h2>Live listening room</h2><p>Active playback sessions across connected browsers.</p></div><span class="storage-pill" id="insightLiveStatus">CONNECTING</span></div><div class="audience-live-grid"><div class="audience-count"><strong id="insightListenerCount">—</strong><span>currently listening</span></div><div id="insightLiveUsers" class="audience-user-list"><div class="chart-empty">Waiting for live presence…</div></div></div></section>
+      <section class="admin-section glass analytics-section"><div class="section-top"><div><h2>Music performance analytics</h2><p>Catalogue mix, upload trend, aggregate listening time and service performance.</p></div><span class="storage-pill">DATA-DRIVEN</span></div><div class="admin-analytics-grid" id="insightAnalytics"><div class="chart-empty">Open the Admin dashboard once to load the current analytics snapshot.</div></div></section>
+      <div class="insight-coverage glass"><strong>Data coverage & privacy</strong><p>Live names and tracks come from active Realtime sessions. Guest sessions are labelled Guest. This browser-only build does not collect or display IP addresses. Historical per-user playtime requires server-side playback-event records; only aggregate lifetime play metrics are available from the current admin API.</p></div>
+      <div class="test-summary glass" id="testSummary"><strong>System checks will run automatically</strong><span>Service health and catalogue checks appear below.</span></div>
       <div class="test-list" id="testResults"><div class="empty"><strong>Ready to diagnose</strong>Tests are read-only except for temporary playlist and like checks. Temporary test rows are deleted automatically.</div></div>
-      <section class="test-notes glass"><h2>Manual function checks</h2><p>After automated checks pass, verify these user-facing flows:</p><ul>
-        <li><b>Accounts:</b> sign up, email confirmation, sign in, password reset and sign out.</li>
-        <li><b>Music:</b> open Search, select a real track, play/pause, seek, next/previous, shuffle, repeat and volume.</li>
-        <li><b>Library:</b> like/unlike a track, create a playlist, add/remove a track and delete the playlist.</li>
-        <li><b>Owner publishing:</b> open the administrator dashboard to upload, edit and delete tracks. The Supabase secret key stays in Cloudflare Worker Secrets.</li>
-      </ul><p class="muted">No demo tracks or fake playlists are included. An empty catalogue is a valid clean state.</p></section>
+
     </div>`;
   }
 };
 
 function route() {
-  const m = location.hash.match(/^#\/([a-z]+)(?:\/(.+))?$/);
-  return { name: m && views[m[1]] ? m[1] : 'home', id: m?.[2] };
+  const raw=String(location.hash||'').replace(/^#\/?/,'');
+  const slash=raw.indexOf('/');
+  const name=(slash<0?raw:raw.slice(0,slash)).toLowerCase();
+  const id=slash<0?undefined:raw.slice(slash+1);
+  return { name: views[name] ? name : 'home', id };
 }
 function render() {
   const current = route();
   if (current.name === 'admin' && !isAdmin) {
     $('view').innerHTML = views.admin();
-  } else if (current.name === 'tests' && !isAdmin) {
-    $('view').innerHTML = `<div class="page">${empty('Administrator access required','The system diagnostics and service network are reserved for the SONORA administrator account.')}</div>`;
+  } else if (current.name === 'diagnostics' && !isAdmin) {
+    $('view').innerHTML = `<div class="page">${empty('Administrator access required','The Music & Audience Intelligence and service network are reserved for the SONORA administrator account.')}</div>`;
   } else {
-    $('view').innerHTML = views[current.name](current.id && decodeURIComponent(current.id));
+    let routeId=current.id; try { if (routeId) routeId=decodeURIComponent(routeId); } catch { /* keep raw route token */ }
+    $('view').innerHTML = views[current.name](routeId);
   }
   const navRoute=current.name==='playlist'?'playlists':current.name==='album'?'albums':current.name;
   qsa('[data-nav]').forEach((a) => { const on = a.dataset.nav === navRoute; on ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current'); });
   const si = $('topSearch'); if (document.activeElement !== si) si.value = query;
   syncLike();
   if (current.name === 'admin' && isAdmin) loadAdminDashboard();
+  if (current.name === 'diagnostics' && isAdmin) { if(adminOverview){ const target=$('insightAnalytics'); if(target){ target.id='adminAnalytics'; const holder=document.createElement('div'); holder.id='adminInsights'; holder.hidden=true; target.parentNode.appendChild(holder); renderAdminAnalytics(adminOverview); target.id='insightAnalytics'; holder.remove(); } } if(!window.__sonoraAutoTestsStarted){ window.__sonoraAutoTestsStarted=true; setTimeout(runSystemTests, 80); } }
 }
 window.addEventListener('hashchange', () => { render(); window.scrollTo({ top:0 }); $('view').focus({ preventScroll:true }); });
 
@@ -1030,7 +1046,7 @@ function setActive(t) {
 }
 function load(t, autoplay) {
   setActive(t);
-  if (!t.audioUrl) { audio.removeAttribute('src'); audio.load(); syncPlaying(); if (autoplay) notify('This track has no playable audio URL. Check the track metadata and Worker configuration in System Test.'); return; }
+  if (!t.audioUrl) { audio.removeAttribute('src'); audio.load(); syncPlaying(); if (autoplay) notify('This track has no playable audio URL. Check the track metadata and Worker configuration in Music & Audience Intelligence.'); return; }
   if (audio.src !== t.audioUrl) audio.src = t.audioUrl;
   if (autoplay) audio.play().catch((e) => { if (e.name !== 'AbortError') notify('Could not start playback. Tap play to try again.'); });
   syncPlaying();
@@ -1208,7 +1224,7 @@ async function removeFromPlaylist(plId, trackId) {
   p.ids = p.ids.filter((x) => x !== trackId); if (!isCloudUser()) saveGuest(); render();
 }
 
-/* ---------- system diagnostics ---------- */
+/* ---------- Music & Audience Intelligence ---------- */
 const testResults = [];
 function paintTests(running = false) {
   const list = $('testResults');
@@ -1290,6 +1306,14 @@ async function runSystemTests() {
     if (error) throw error;
     catalogueRows = data || [];
     return { detail:catalogueRows.length ? `Read ${catalogueRows.length} published track(s).` : 'Table is readable and currently empty. No sample music is seeded.' };
+  });
+
+  await check('Catalogue duplicate metadata audit', async () => {
+    const norm=(v)=>String(v||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+    const seen=new Map(), duplicates=[];
+    catalogueRows.forEach(track=>{const key=`${norm(track.title)}|${norm(track.artist)}`;if(seen.has(key))duplicates.push(`${track.title} — ${track.artist}`);else seen.set(key,track.id);});
+    if(duplicates.length)return {detail:`Found ${duplicates.length} possible title/artist duplicates: ${duplicates.slice(0,8).join('; ')}. Compare the audio before removing anything.`};
+    return {detail:`No title/artist metadata duplicates found in ${catalogueRows.length} published tracks. Audio fingerprint comparison is not available in the frontend-only build.`};
   });
 
   if (session?.user) {
@@ -1430,16 +1454,16 @@ async function runSystemTests() {
     return { detail:'Sign-in, create-account, password-reset and guest-mode controls are present. A real login/signup requires manual credentials and email confirmation.' };
   });
 
-  await check('System Test route and navigation', () => {
-    if (!document.querySelector('[data-nav="tests"]')) throw new Error('System Test navigation link is missing.');
-    return { detail:'System Test is available in desktop and mobile navigation.' };
+  await check('Music & Audience Intelligence route and navigation', () => {
+    if (!document.querySelector('[data-nav="diagnostics"]')) throw new Error('Music & Audience Intelligence navigation link is missing.');
+    return { detail:'Music & Audience Intelligence is available in desktop and mobile navigation.' };
   });
 
   const totals = { passed:testResults.filter((x) => x.status === 'PASS').length, failed:testResults.filter((x) => x.status === 'FAIL').length, skipped:testResults.filter((x) => x.status === 'SKIP').length };
   paintTests(false);
-  if (button) { button.disabled = false; button.innerHTML = `${ic('activity')}Run all tests again`; }
-  if (totals.failed) notify(`${totals.failed} system test(s) failed. Open System Test for details.`);
-  else notify('System tests completed. Review skipped checks and manual steps.');
+  if (button) { button.disabled = false; button.innerHTML = `${ic('activity')}Run checks again`; }
+  if (totals.failed) notify(`${totals.failed} diagnostic check(s) failed. Open Music & Audience Intelligence for details.`);
+  else notify('Music & Audience Intelligence completed. Review skipped checks and manual steps.');
 }
 
 /* ---------- delegated clicks ---------- */
@@ -1459,12 +1483,13 @@ $('view').addEventListener('click', (e) => {
       case 'newpl': newPlaylistDialog(); break;
       case 'delpl': deletePlaylist(id); break;
       case 'run-tests': runSystemTests(); break;
+      case 'open-album': e.preventDefault(); location.hash = `#/album/${encodeURIComponent(a.dataset.albumId || '')}`; break;
       case 'pref-toggle': togglePreference(a.dataset.kind, a.dataset.value); break;
       case 'save-preferences': saveUserPreferences(true); break;
       case 'theme-mode': applyTheme(a.dataset.value, themeAccent, true); render(); break;
       case 'theme-accent': applyTheme(themeMode, a.dataset.value, true); render(); break;
       case 'save-appearance': applyTheme(themeMode, themeAccent, true); saveUserPreferences(false, true); break;
-      case 'admin-refresh': loadAdminDashboard(); break;
+      case 'admin-refresh': loadAdminDashboard(true); break;
       case 'admin-delete': deleteAdminTrack(id); break;
       case 'admin-edit': editAdminTrack(id); break;
       case 'signout': signOutUser(); break;
@@ -1568,9 +1593,9 @@ function refreshAccount() {
   $('syncText').textContent = user ? (isAdmin ? 'Administrator account · cloud library synced.' : 'Likes and playlists follow you across devices.') : 'Likes and playlists stay on this device until you sign in.';
   const nav = $('adminNav');
   if (nav) nav.classList.toggle('hidden', !isAdmin);
-  const tests = $('testNav');
+  const tests = $('diagnosticsNav');
   if (tests) tests.classList.toggle('hidden', !isAdmin);
-  const mobileTests = $('mobileTestNav');
+  const mobileTests = $('mobileDiagnosticsNav');
   if (mobileTests) mobileTests.classList.toggle('hidden', !isAdmin);
 }
 async function signOutUser() {
@@ -1600,16 +1625,8 @@ function newPasswordDialog() {
 }
 
 
-window.addEventListener('beforeinstallprompt', (event) => { event.preventDefault(); deferredInstallPrompt = event; });
-$('view').addEventListener('click', async (event) => {
-  if (event.target.closest('#installAppBtn')) {
-    if (deferredInstallPrompt) { deferredInstallPrompt.prompt(); await deferredInstallPrompt.userChoice; deferredInstallPrompt = null; }
-    else notify('To install: open your browser menu and choose “Install app” or “Add to Home Screen”.');
-  }
-});
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js', { scope:'./' }).catch((e) => console.warn('SONORA offline shell unavailable:', e)));
-}
+// SONORA is delivered as a responsive website. Unregister older PWA workers so old installs do not keep forcing the cached app shell.
+if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(reg => reg.unregister())).catch(err => console.warn('Could not unregister old app worker:', err))); }
 
 /* ---------- auth session orchestration + start ---------- */
 async function handleAuthSession(event, session) {
@@ -1629,7 +1646,7 @@ async function handleAuthSession(event, session) {
         if (route().name !== 'preferences') location.hash = '#/preferences';
         else render();
       } else if (route().name === 'preferences') location.hash = '#/home';
-      if ((route().name === 'admin' || route().name === 'tests') && !isAdmin) location.hash = '#/home';
+      if ((route().name === 'admin' || route().name === 'diagnostics') && !isAdmin) location.hash = '#/home';
     } else {
       isAdmin = false;
       userPreferences = { display_name:'', preferred_genres:[], preferred_moods:[], onboarding_completed:false, autoplay_next:store.get('sonora-autoplay-next', true), theme_mode:'system', theme_accent:'violet' };
@@ -1637,7 +1654,7 @@ async function handleAuthSession(event, session) {
       preferencesSchemaReady = false;
       refreshAccount();
       await loadLibrary();
-      if (route().name === 'admin' || route().name === 'tests' || route().name === 'settings' || route().name === 'preferences') location.hash = '#/home';
+      if (route().name === 'admin' || route().name === 'diagnostics' || route().name === 'settings' || route().name === 'preferences') location.hash = '#/home';
       if (event === 'SIGNED_OUT' && !store.get('sonora-guest', false)) showAuth('signin');
     }
   } else if (user) {
@@ -1652,6 +1669,7 @@ async function init() {
   if (!cloud) { if (!store.get('sonora-guest', false)) showAuth('signin'); return; }
   sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:'pkce' } });
   startLivePresence();
+  window.setInterval(() => { if (livePresenceReady) publishLivePresence(); }, 15000);
   sb.auth.onAuthStateChange((event, session) => {
     setTimeout(() => { handleAuthSession(event, session).catch((error) => console.error('SONORA auth state:', error)); }, 0);
   });
