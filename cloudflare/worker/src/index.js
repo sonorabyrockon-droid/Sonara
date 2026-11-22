@@ -21,10 +21,13 @@
  * Required Worker secret:
  *   SUPABASE_SECRET_KEY (sb_secret_...; never put in GitHub or the browser)
  */
-const VERSION = '3.6.0';
+const VERSION = '3.21.0';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_TRACKS_RETURNED = 250;
-const UPLOADS_PER_HOUR = 12;
+// Safety ceiling only. The old limit of 12 blocked normal batch uploads (and counted failed attempts).
+// Override without code changes via an optional UPLOADS_PER_HOUR Worker variable.
+const DEFAULT_UPLOADS_PER_HOUR = 500;
+const uploadsPerHour = (env) => { const n = Number(env?.UPLOADS_PER_HOUR); return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_UPLOADS_PER_HOUR; };
 const AUDIO_TYPES = {
   mp3: 'audio/mpeg',
   m4a: 'audio/mp4',
@@ -197,20 +200,24 @@ async function writeAudit(env, user, action, details = {}) {
   }
 }
 async function enforceUploadRate(env, user) {
+  // Check only. The upload is recorded AFTER it succeeds (recordUpload), so failed,
+  // duplicate-blocked or rolled-back attempts never consume the hourly allowance.
   const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const path = `sonora_upload_events?select=id&user_id=eq.${encodeURIComponent(user.id)}&created_at=gte.${encodeURIComponent(since)}`;
   const response = await supabaseRest(env, path, { headers: { Prefer: 'count=exact' } });
   if (!response.ok) throw new Error(`Upload rate-limit check failed: ${(await response.text()).slice(0, 180)}`);
   const range = response.headers.get('Content-Range') || '';
   const total = Number(range.split('/').pop());
-  if (Number.isFinite(total) && total >= UPLOADS_PER_HOUR) return false;
-  const log = await supabaseRest(env, 'sonora_upload_events', {
-    method: 'POST',
-    headers: { Prefer: 'return=minimal' },
-    body: JSON.stringify({ user_id: user.id, action: 'upload' })
-  });
-  if (!log.ok) throw new Error(`Upload audit/rate-limit table is not ready: ${(await log.text()).slice(0, 180)}`);
-  return true;
+  return !(Number.isFinite(total) && total >= uploadsPerHour(env));
+}
+async function recordUpload(env, user) {
+  try {
+    await supabaseRest(env, 'sonora_upload_events', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ user_id: user.id, action: 'upload' })
+    });
+  } catch (error) { console.error('SONORA upload event write failed:', error?.message || error); }
 }
 async function getAdminOverview(env, user) {
   const started = Date.now();
@@ -423,7 +430,7 @@ async function adminRoute(request, env, url) {
     let permitted;
     try { permitted = await enforceUploadRate(env, user); }
     catch (e) { return json({ error: e.message }, 503); }
-    if (!permitted) return json({ error: `Upload limit reached: maximum ${UPLOADS_PER_HOUR} tracks per hour.` }, 429);
+    if (!permitted) return json({ error: `Upload limit reached: maximum ${uploadsPerHour(env)} tracks per hour.` }, 429);
     const key = `tracks/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}.${ext}`;
     try {
       let streamedBytes = 0;
@@ -476,6 +483,7 @@ async function adminRoute(request, env, url) {
         throw new Error(`Audio was rolled back because the Supabase track insert failed: ${err}`);
       }
       const rows = await insert.json();
+      await recordUpload(env, user);
       await writeAudit(env, user, 'track.upload', { track_id: rows?.[0]?.id, title, artist, key, file_size: object.size || length });
       return json({ ok: true, track: rows?.[0] || null, audio_key: key, bytes: object.size || streamedBytes || length }, 201);
     } catch (error) {

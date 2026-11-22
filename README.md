@@ -22,7 +22,7 @@ The admin console includes:
 - Track catalogue listing, metadata editing, unpublishing and permanent deletion (including the matching R2 object)
 - Supabase Auth, Supabase Data API and R2 connection health checks
 - Catalogue counts, scanned R2 object count/bytes and recent admin audit events
-- Upload rate limit: 12 tracks per administrator per hour
+- Upload safety ceiling: 500 tracks per administrator per hour (only successful uploads count; override with an optional `UPLOADS_PER_HOUR` Worker variable)
 - Worker health and runtime metrics links/instructions
 
 Cloudflare CPU time, requests, error rate and invocation logs remain in the Cloudflare dashboard. The admin console checks service reachability; it cannot guarantee there will never be an external outage.
@@ -108,7 +108,7 @@ The account button opens Settings, where listeners can update their display name
 
 - Supported: MP3, M4A, MP4 audio, AAC, WAV, OGG, OPUS, FLAC and WEBM audio.
 - Maximum direct upload: 100 MB per track.
-- Maximum 12 uploads per hour for the administrator account.
+- Hourly ceiling of 500 successful uploads for the administrator account (optional `UPLOADS_PER_HOUR` variable).
 - Files are streamed from the browser to the Worker and then into R2; they are not placed in GitHub.
 - Only upload audio you own or are licensed to distribute.
 

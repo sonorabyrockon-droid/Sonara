@@ -102,3 +102,70 @@ test('admin overview includes persisted descriptions in the catalogue payload', 
     assert.equal(body.tracks[0].description,savedDescription);
   } finally { globalThis.fetch=originalFetch; }
 });
+
+
+function uploadRequest() {
+  const params=new URLSearchParams({title:'Fresh Song',artist:'Test Artist',filename:'fresh.mp3'});
+  return new Request(`https://worker.example.test/admin/upload?${params}`, {
+    method:'POST',
+    headers:{Authorization:'Bearer unit-test-token','Content-Type':'audio/mpeg',Origin:'https://sonora.example.test'},
+    body:Buffer.from('fake-audio-content')
+  });
+}
+
+test('upload is allowed past the old 12-per-hour limit and is recorded only after success', async () => {
+  const events=[];
+  const okEnv={...env,AUDIO:{put:async()=>({size:18}),delete:async()=>{}}};
+  globalThis.fetch=async (input, init={}) => {
+    const url=new URL(input);
+    const auth=authResponse(url); if(auth)return auth;
+    if (url.pathname.endsWith('/rest/v1/sonora_upload_events')) {
+      if (init.method==='POST') { events.push(init.body); return new Response(null,{status:201}); }
+      return jsonResponse([], 200, {'Content-Range':'0-11/12'});
+    }
+    if (url.pathname.endsWith('/rest/v1/tracks') && init.method==='POST') return jsonResponse([{id:'new-id',title:'Fresh Song'}],201);
+    if (url.pathname.endsWith('/rest/v1/tracks')) return jsonResponse([]);
+    if (url.pathname.endsWith('/rest/v1/sonora_admin_audit')) return jsonResponse([]);
+    throw new Error(`Unexpected fetch in test: ${init.method||'GET'} ${url}`);
+  };
+  try {
+    const response=await worker.fetch(uploadRequest(),okEnv);
+    assert.equal(response.status,201);
+    assert.equal(events.length,1);
+  } finally { globalThis.fetch=originalFetch; }
+});
+
+test('a failed upload does not consume the hourly allowance', async () => {
+  const events=[];
+  const failEnv={...env,AUDIO:{put:async()=>{ throw new Error('R2 down'); },delete:async()=>{}}};
+  globalThis.fetch=async (input, init={}) => {
+    const url=new URL(input);
+    const auth=authResponse(url); if(auth)return auth;
+    if (url.pathname.endsWith('/rest/v1/sonora_upload_events')) {
+      if (init.method==='POST') { events.push(init.body); return new Response(null,{status:201}); }
+      return jsonResponse([], 200, {'Content-Range':'*/0'});
+    }
+    if (url.pathname.endsWith('/rest/v1/tracks')) return jsonResponse([]);
+    throw new Error(`Unexpected fetch in test: ${init.method||'GET'} ${url}`);
+  };
+  try {
+    const response=await worker.fetch(uploadRequest(),failEnv);
+    assert.equal(response.status,500);
+    assert.equal(events.length,0);
+  } finally { globalThis.fetch=originalFetch; }
+});
+
+test('the hourly ceiling still applies when UPLOADS_PER_HOUR is set', async () => {
+  globalThis.fetch=async (input, init={}) => {
+    const url=new URL(input);
+    const auth=authResponse(url); if(auth)return auth;
+    if (url.pathname.endsWith('/rest/v1/sonora_upload_events')) return jsonResponse([], 200, {'Content-Range':'0-2/3'});
+    if (url.pathname.endsWith('/rest/v1/tracks')) return jsonResponse([]);
+    throw new Error(`Unexpected fetch in test: ${init.method||'GET'} ${url}`);
+  };
+  try {
+    const response=await worker.fetch(uploadRequest(),{...env,UPLOADS_PER_HOUR:'3'});
+    assert.equal(response.status,429);
+    assert.match((await response.json()).error,/maximum 3 tracks per hour/);
+  } finally { globalThis.fetch=originalFetch; }
+});

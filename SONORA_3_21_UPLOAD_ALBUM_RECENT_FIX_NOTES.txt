@@ -1,0 +1,23 @@
+SONORA 3.21 — upload limit, single album cover, Recently played on Home
+
+1. Upload limit ("maximum 12 tracks per hour")
+   - Root cause: the Worker wrote the rate-limit event BEFORE the upload ran, so failed,
+     retried or rolled-back uploads used up the 12 slots; batch uploads hit the cap fast.
+   - Fix: the limit is now only a CHECK before upload; the event is recorded AFTER the track
+     is stored in R2 and inserted in Supabase. Failed uploads no longer count.
+   - Default ceiling raised to 500 per hour (safety net only). Optional Worker variable
+     UPLOADS_PER_HOUR overrides it. wrangler.toml is unchanged.
+   - REQUIRES redeploying the Cloudflare Worker (the limit is enforced server-side).
+
+2. Album cover
+   - Album cards (Home, Albums, Album page) now show ONE cover instead of a 4-tile mosaic:
+     the most-used cover among the album's tracks (earliest track wins ties), falling back to
+     the first track's initial tile. Playlists / Liked songs keep their mosaic.
+
+3. Recently played on Home
+   - New "Recently played" row (last 8 tracks, up to 20 remembered) with a Clear button.
+   - Recorded when audio actually starts playing; stored per account on this device
+     (localStorage key sonora-recent:<user id | guest>). No SQL/RLS changes were needed.
+
+Not changed: config.js, Supabase URL/keys, STREAM_URL, wrangler.toml, auth, Realtime, SQL.
+Version bumped to 3.21.0 (assets + service-worker cache) so browsers pick up the update.

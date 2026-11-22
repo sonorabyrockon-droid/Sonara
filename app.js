@@ -184,7 +184,41 @@ function collectionArtwork(items, label = 'Collection') {
   const tiles = chosen.map((track) => `<span class="collection-tile" style="--h1:${hue(track.id)};--h2:${(hue(track.id)+24)%360}">${track.coverUrl ? `<img src="${esc(track.coverUrl)}" alt="" loading="lazy">` : `<b>${esc((track.title || 'S').slice(0,1))}</b>`}</span>`).join('');
   return `<span class="collection-art" role="img" aria-label="${esc(label)} artwork">${tiles || '<span class="collection-art-empty">♫</span>'}</span>`;
 }
+/* One representative cover per album (most-used cover among its tracks, earliest track wins ties) instead of a 4-tile mosaic. */
+function albumCoverTrack(items) {
+  const list = items || [];
+  const counts = new Map();
+  list.forEach((t, i) => { if (t.coverUrl) { const c = counts.get(t.coverUrl) || { n:0, i, t }; c.n++; counts.set(t.coverUrl, c); } });
+  const best = [...counts.values()].sort((a, b) => b.n - a.n || a.i - b.i)[0];
+  return best ? best.t : list[0];
+}
+function albumArtwork(items, label = 'Album') {
+  const t = albumCoverTrack(items);
+  return collectionArtwork(t ? [t] : [], label);
+}
+/* ---------- recently played (device-local, per account) ---------- */
+const RECENT_MAX = 20;
+const recentKey = () => `sonora-recent:${user?.id || 'guest'}`;
+const recentIds = () => { const v = store.get(recentKey(), []); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; };
+const recentTracks = () => recentIds().map((id) => byId(id)).filter(Boolean);
+function recordRecent(id) {
+  if (!id) return;
+  if (recentIds()[0] === id) return; /* already on top: avoid re-rendering on buffering/resume events */
+  store.set(recentKey(), [id, ...recentIds().filter((x) => x !== id)].slice(0, RECENT_MAX));
+  refreshRecentSection();
+}
+function recentSection() {
+  const list = recentTracks().slice(0, 8);
+  if (!list.length) return '';
+  return `<div class="sec-head"><div><h2>Recently played</h2><p>Pick up where you left off.</p></div><button type="button" class="link" data-act="clear-recent">Clear</button></div>
+      <div class="grid">${list.map((t) => card(t, 'recent')).join('')}</div>`;
+}
+function refreshRecentSection() {
+  const host = $('recentListening'); if (!host || route().name !== 'home') return;
+  host.innerHTML = recentSection();
+}
 const ctxList = (ctx) => {
+  if (ctx === 'recent') return recentTracks();
   if (ctx === 'liked') return tracks.filter((t) => liked.has(t.id));
   if (ctx === 'search') return filtered();
   if (ctx.startsWith('pl:')) return (playlistById(ctx.slice(3))?.ids || []).map(byId).filter(Boolean);
@@ -1198,10 +1232,11 @@ const views = {
     ${f ? `<section class="feature glass" aria-label="Featured track">${cover(f)}<div style="min-width:0"><div class="kicker">Newest release</div><h2>${esc(f.title)}</h2><div class="muted">${esc(f.artist)} · ${esc(f.genre)}</div>
       <div class="acts"><button class="btn btn-primary" data-act="playcard" data-id="${esc(f.id)}" data-ctx="home">${ic('play')}Play</button>
       <button class="btn btn-glass" data-act="add" data-id="${esc(f.id)}">${ic('plus')}Add to playlist</button></div></div></section>` : emptyCatalogue()}
+    <div id="recentListening">${recentSection()}</div>
     ${tracks.length > 1 ? `<div class="sec-head"><div><h2>Fresh releases</h2><p>Recently added to the catalogue.</p></div></div>
       <div class="grid">${homeTracks.slice(1, 9).map((t) => card(t, 'home')).join('')}</div>` : ''}
     ${genres().length ? `<div class="sec-head"><div><h2>Browse by genre</h2></div></div><div class="chips">${genres().map((g) => `<button class="chip" data-act="genre" data-genre="${esc(g)}">${esc(g)}</button>`).join('')}</div>` : ''}
-    ${albumEntries().length ? `<div class="sec-head"><div><h2>Albums & soundtracks</h2><p>Automatically grouped from catalogue metadata.</p></div><a class="link" href="#/albums">View all</a></div><div class="grid collection-grid">${albumEntries().slice(0,4).map(a=>`<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" data-act="open-album" data-album-id="${esc(a.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(a.tracks,a.name)}<span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length===1?'track':'tracks'}</span></a>`).join('')}</div>` : ''}
+    ${albumEntries().length ? `<div class="sec-head"><div><h2>Albums & soundtracks</h2><p>Automatically grouped from catalogue metadata.</p></div><a class="link" href="#/albums">View all</a></div><div class="grid collection-grid">${albumEntries().slice(0,4).map(a=>`<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" data-act="open-album" data-album-id="${esc(a.id)}" style="text-decoration:none;color:inherit">${albumArtwork(a.tracks,a.name)}<span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length===1?'track':'tracks'}</span></a>`).join('')}</div>` : ''}
     ${tracks.length ? `<div class="sec-head"><div><h2>All tracks</h2><p>${tracks.length} in the catalogue.</p></div><button class="link" data-act="go" data-to="search">Open search</button></div>${rows(tracks.slice(0, 10), 'home')}` : ''}</div>`;
   },
   search() {
@@ -1238,14 +1273,14 @@ const views = {
   albums() {
     const albums = albumEntries();
     return `<div class="page library-page"><div class="kicker">YOUR LIBRARY</div><h1>Albums & soundtracks</h1><p class="lede">Tracks with matching album or movie soundtrack metadata are automatically grouped here.</p>
-      ${albums.length ? `<div class="grid collection-grid">${albums.map((album) => `<a class="card collection-card" href="#/album/${encodeURIComponent(album.id)}" data-act="open-album" data-album-id="${esc(album.id)}" style="text-decoration:none;color:inherit">${collectionArtwork(album.tracks, album.name)}<span class="t">${esc(album.name)}</span><span class="s">${album.tracks.length} ${album.tracks.length===1?'track':'tracks'} · ${[...new Set(album.tracks.map(t=>t.artist))].length>1?'Various artists':esc(album.tracks[0]?.artist||'Album')}</span></a>`).join('')}</div>` : empty('No albums yet', 'As tracks are added with album or movie soundtrack metadata, SONORA groups them into album collections automatically.')}</div>`;
+      ${albums.length ? `<div class="grid collection-grid">${albums.map((album) => `<a class="card collection-card" href="#/album/${encodeURIComponent(album.id)}" data-act="open-album" data-album-id="${esc(album.id)}" style="text-decoration:none;color:inherit">${albumArtwork(album.tracks, album.name)}<span class="t">${esc(album.name)}</span><span class="s">${album.tracks.length} ${album.tracks.length===1?'track':'tracks'} · ${[...new Set(album.tracks.map(t=>t.artist))].length>1?'Various artists':esc(album.tracks[0]?.artist||'Album')}</span></a>`).join('')}</div>` : empty('No albums yet', 'As tracks are added with album or movie soundtrack metadata, SONORA groups them into album collections automatically.')}</div>`;
   },
   album(id) {
     const album = albumById(id);
     if (!album) return `<div class="page"><h1>Album not found</h1><p class="lede">This album may no longer be in the catalogue.</p><a class="btn btn-glass" href="#/albums" style="text-decoration:none">Browse albums</a></div>`;
     const artists=[...new Set(album.tracks.map(t=>t.artist))];
     const ctx=`album:${album.id}`;
-    return `<div class="page library-page"><section class="collection-hero glass">${collectionArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artists.length>1?'Various artists':esc(artists[0]||'Unknown artist')} · ${album.tracks.length} ${album.tracks.length===1?'track':'tracks'}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button></div></div></section>
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artists.length>1?'Various artists':esc(artists[0]||'Unknown artist')} · ${album.tracks.length} ${album.tracks.length===1?'track':'tracks'}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button></div></div></section>
       <div class="sec-head"><div><h2>Track list</h2><p>All catalogue tracks recognised as part of this album.</p></div></div>${rows(album.tracks, ctx)}</div>`;
   },
   preferences() {
@@ -1340,7 +1375,7 @@ const views = {
       </section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Music catalogue</h2><p>Search, edit, unpublish or permanently delete a track and its R2 object.</p></div><span class="muted" id="adminCatalogCount">Latest 250 records</span></div><div class="catalog-search"><span>⌕</span><input class="input" id="adminCatalogSearch" type="search" value="${esc(adminCatalogQuery)}" placeholder="Search title, artist, album, genre or description…" aria-label="Search music catalogue"></div><div class="admin-track-list" id="adminTracks"><p class="muted">Loading catalogue…</p></div></section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Admin activity</h2><p>Recent upload, update and delete actions.</p></div></div><div id="adminAudit" class="admin-audit"><p class="muted">Loading activity…</p></div></section>
-      <section class="admin-note"><strong>Reliability & safety</strong><p>Dashboard checks show current service reachability, not a guarantee against outages. Cloudflare CPU, request volume and edge errors remain available in the Worker Metrics and Observability tabs. Uploads are limited to 100 MB per file and 12 per administrator per hour.</p></section>
+      <section class="admin-note"><strong>Reliability & safety</strong><p>Dashboard checks show current service reachability, not a guarantee against outages. Cloudflare CPU, request volume and edge errors remain available in the Worker Metrics and Observability tabs. Uploads are limited to 100 MB per file; the hourly upload ceiling is a high safety limit that only successful uploads count towards.</p></section>
     </div>`;
   },
   diagnostics() {
@@ -1555,7 +1590,7 @@ audio.addEventListener('ended', () => { finishPlaybackEvent(); });
 window.addEventListener('pagehide', () => { finishPlaybackEvent(); try { livePresenceChannel?.untrack(); } catch (error) { console.warn('SONORA presence untrack:', error?.message || error); } });
 audio.addEventListener('loadedmetadata', () => { $('dur').textContent = fmt(audio.duration); syncExpandedPlayer(); });
 audio.addEventListener('play', syncPlaying); audio.addEventListener('pause', syncPlaying);
-audio.addEventListener('playing', () => { syncPlaying(); publishLivePresence(); });
+audio.addEventListener('playing', () => { syncPlaying(); if (active?.id) recordRecent(active.id); publishLivePresence(); });
 audio.addEventListener('ended', () => publishLivePresence());
 window.addEventListener('focus', () => { if (livePresenceReady) { publishLivePresence(); readLivePresenceSnapshot(); if (['admin','diagnostics'].includes(route().name)) renderLivePresence(); } });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && livePresenceReady) { publishLivePresence(); readLivePresenceSnapshot(); if (['admin','diagnostics'].includes(route().name)) renderLivePresence(); } });
@@ -1795,6 +1830,7 @@ $('view').addEventListener('click', (e) => {
       case 'playctx': playContext(ctx, false); break;
       case 'playctx-shuffle': playContext(ctx, true); break;
       case 'genre': genre = genre === a.dataset.genre && route().name === 'search' ? 'All' : a.dataset.genre; if (route().name === 'search') render(); else location.hash = '#/search'; break;
+      case 'clear-recent': store.set(recentKey(), []); render(); break;
       case 'go': location.hash = `#/${a.dataset.to}`; break;
       case 'newpl': newPlaylistDialog(); break;
       case 'delpl': deletePlaylist(id); break;
