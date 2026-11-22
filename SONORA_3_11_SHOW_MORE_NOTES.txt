@@ -1,0 +1,11 @@
+SONORA 3.11 — SHOW MORE CONTROLS
+
+Frontend-only change:
+- Music catalogue now renders the first 10 matching records and adds a Show more tracks control in batches of 10.
+- Admin activity now renders the first 8 records and adds a Show more activity control in batches of 8.
+- Both lists provide Show less after expansion.
+- Catalogue search resets its visible batch to the first 10 matches.
+- Controls use the existing delegated frontend click handler.
+- Added matching desktop and mobile styling.
+
+No Worker, SQL, database schema, API, or deployment files were changed.

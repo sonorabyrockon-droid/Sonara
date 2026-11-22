@@ -6,11 +6,13 @@
 - Added a browser-local migration that removes old `demo-*` likes and former sample playlists from earlier versions.
 - Added `sql/cleanup-demo-data.sql`, which targets only the exact eight old demo title/artist/album combinations if they were previously inserted in Supabase.
 
-## System Test
-- Added a System Test route to desktop and mobile navigation.
-- Automated checks cover DOM controls, local storage, Supabase configuration/SDK/auth/catalogue, authenticated private library access, temporary playlist and likes CRUD, Worker health, R2 binding availability, audio byte-range streaming, search, theme, and diagnostics navigation.
-- Temporary test rows are cleaned up automatically; checks requiring sign-in or real audio report SKIP rather than false failures.
-- Test output includes status, explanatory detail and error stack where available.
+## Music & Audience Intelligence (frontend)
+- Replaced the retired manual System Test screen with a Power BI-inspired audience and catalogue analytics dashboard.
+- Visualisations cover live Realtime listeners, currently playing tracks, signed-in versus guest audience mix, current-track elapsed-time bands, genre mix, seven-day uploads, artist and album catalogue depth, platform-wide playback totals, metadata coverage, possible title/artist duplicates and service latency.
+- Added expandable Show more sections and responsive desktop/mobile layouts.
+- Reuses the latest `/admin/overview` snapshot for two minutes when navigating between Admin and Music Intelligence; successful uploads update the current frontend snapshot after the catalogue reloads.
+- Data boundary: the current API exposes aggregate playback totals, not historical per-user listening events; Realtime exposes active listener identity and current track only. Guest IP addresses are not exposed. Duplicate matching is metadata-based, not audio fingerprinting.
+- No Worker, SQL, database schema, API handler or deployment configuration changes are part of this frontend update.
 
 ## Worker diagnostics
 - `/` and `/health` now return JSON diagnostics instead of an unhelpful root 404.

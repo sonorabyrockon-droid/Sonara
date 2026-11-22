@@ -42,6 +42,7 @@ let preferenceDraft = { genres:[], moods:[] };
 let preferenceNameDraft = '';
 let autoplayDraft = store.get('sonora-autoplay-next', true);
 let adminOverview = null, adminLoadError = '', adminCatalogQuery = '';
+let adminCatalogVisible = 10, adminAuditVisible = 8;
 let livePresenceChannel = null, livePresenceReady = false, livePresenceStatus = 'CONNECTING', liveListenerSnapshot = [], liveTrackStartedAt = 0, liveTrackIdentity = '';
 const liveSessionKey = `sonora-${window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 let pendingPlaySeconds = 0, sessionPlayedSeconds = 0, currentPlayEventId = null, playEventCreating = false, playFinishRequested = false, lastPlaybackPosition = null, lastPlaybackTrackId = null, playFlushBusy = false;
@@ -94,7 +95,7 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener?.('change', 
 const streamUrl = (key) => streamingConfigured && key ? `${String(C.STREAM_URL).replace(/\/$/, '')}/stream/${String(key).split('/').map(encodeURIComponent).join('/')}` : '';
 function mapRow(r) {
   return { id:r.id, title:r.title || 'Untitled', artist:r.artist || 'Unknown artist', album:r.album || 'Single', genre:r.genre || 'Other',
-    duration:Number(r.duration_seconds) || 0, coverUrl:safeUrl(r.cover_url || ''),
+    duration:Number(r.duration_seconds) || 0, coverUrl:safeUrl(r.cover_url || ''), audioKey:r.audio_key||'', fileSize:Number(r.file_size)||0, createdAt:r.created_at||'',
     audioUrl: r.audio_key ? streamUrl(r.audio_key) : safeUrl(r.audio_url || '') };
 }
 async function loadCatalogue() {
@@ -363,6 +364,7 @@ function renderLivePresence() {
   if(insightStatus){insightStatus.textContent=livePresenceReady?'LIVE':livePresenceStatus;insightStatus.className=`storage-pill ${livePresenceReady?'live-pill':''}`;}
   if(insightCount)insightCount.textContent=count==null?'—':count.toLocaleString();
   if(insightUsers){insightUsers.innerHTML=count==null?`<div class="chart-empty">Live presence is not connected. Confirm the existing Supabase Realtime channel.</div>`:!liveListenerSnapshot.length?`<div class="chart-empty">No one is listening right now.</div>`:liveListenerSnapshot.map((listener)=>`<div class="audience-user-row"><span class="audience-avatar">${esc(String(listener.listener_name||'Guest').trim().slice(0,1).toUpperCase())}</span><span><strong>${esc(listener.listener_name||'Guest')}</strong><small>${esc(listener.listener_type||'Guest')} · ${esc(listener.title||'Unknown track')} — ${esc(listener.artist||'Unknown artist')}${listener.started_at?` · ${Math.max(0,Math.floor((Date.now()-Number(listener.started_at))/60000))} min in session`:''}</small></span><b class="audience-playing">PLAYING</b></div>`).join('');}
+  renderIntelligenceLiveBlocks();
   if (!target) return;
   if (count==null) { target.innerHTML=`<div class="chart-empty"><strong>Live presence: ${esc(livePresenceStatus)}</strong><br>Realtime has not subscribed. Check the browser console and Supabase Realtime availability; no server changes were made.</div>`; return; }
   if (!liveListenerSnapshot.length) { target.innerHTML='<div class="live-empty"><span class="live-empty-pulse"></span><div><strong>No active listeners right now</strong><small>Tracks appear here while a listener is actively playing music.</small></div></div>'; return; }
@@ -383,7 +385,7 @@ async function publishLivePresence() {
   if(!playing){liveTrackIdentity='';liveTrackStartedAt=0;}
   const payload={
     session_id:liveSessionKey,
-    listener_name:user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || 'Guest',
+    listener_name:user?(userPreferences.display_name || user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email?.split('@')[0] || 'Listener'):'Guest',
     listener_type:user?'Signed in':'Guest',
     is_listening:playing,
     track_id:playing?String(active.id):null,
@@ -401,7 +403,7 @@ function startLivePresence() {
   if (!sb || livePresenceChannel) return;
   livePresenceStatus='CONNECTING';
   livePresenceChannel=sb.channel('sonora-live-listeners',{config:{presence:{key:liveSessionKey}}});
-  const update=()=>{readLivePresenceSnapshot();if(route().name==='admin')renderLivePresence();};
+  const update=()=>{readLivePresenceSnapshot();if(['admin','diagnostics'].includes(route().name))renderLivePresence();};
   livePresenceChannel
     .on('presence',{event:'sync'},update)
     .on('presence',{event:'join'},update)
@@ -411,7 +413,7 @@ function startLivePresence() {
       livePresenceReady=status==='SUBSCRIBED';
       if (livePresenceReady) await publishLivePresence();
       else liveListenerSnapshot=[];
-      if(route().name==='admin')renderLivePresence();
+      if(['admin','diagnostics'].includes(route().name))renderLivePresence();
     });
 }
 
@@ -424,7 +426,7 @@ function latencyLabel(value) {
   if (value == null) return 'No sample';
   return value < 180 ? 'Fast' : value < 500 ? 'Moderate' : value < 1200 ? 'Slow' : 'Critical';
 }
-function svgDonutChart(items, labelKey, valueKey) {
+function svgDonutChart(items, labelKey, valueKey, centerLabel='tracks') {
   const total = items.reduce((sum,item) => sum + Math.max(0,Number(item[valueKey])||0), 0);
   if (!total) return '<div class="chart-empty">No catalogue genre data yet.</div>';
   const circumference = 2 * Math.PI * 42;
@@ -437,7 +439,7 @@ function svgDonutChart(items, labelKey, valueKey) {
     offset += length;
     return arc;
   }).join('');
-  return `<div class="donut-layout"><svg class="donut-chart" viewBox="0 0 110 110" role="img" aria-label="Catalogue tracks by genre">${arcs}<text x="55" y="52" text-anchor="middle" class="donut-total">${total.toLocaleString()}</text><text x="55" y="66" text-anchor="middle" class="donut-label">tracks</text></svg><div class="donut-legend">${items.map((item,index)=>`<div><i style="--legend-color:${palette[index%palette.length]}"></i><span>${esc(item[labelKey])}</span><b>${Number(item[valueKey]||0).toLocaleString()}</b></div>`).join('')}</div></div>`;
+  return `<div class="donut-layout"><svg class="donut-chart" viewBox="0 0 110 110" role="img" aria-label="Catalogue tracks by genre">${arcs}<text x="55" y="52" text-anchor="middle" class="donut-total">${total.toLocaleString()}</text><text x="55" y="66" text-anchor="middle" class="donut-label">${esc(centerLabel)}</text></svg><div class="donut-legend">${items.map((item,index)=>`<div><i style="--legend-color:${palette[index%palette.length]}"></i><span>${esc(item[labelKey])}</span><b>${Number(item[valueKey]||0).toLocaleString()}</b></div>`).join('')}</div></div>`;
 }
 function svgUploadTrend(items) {
   const values = items.map(x=>Math.max(0,Number(x.count)||0));
@@ -529,32 +531,74 @@ function renderAdminOverview(data) {
   if (data.metrics?.metrics_note) health.innerHTML += `<p class="muted health-note">${esc(data.metrics.metrics_note)}</p>`;
   const catalogQuery = adminCatalogQuery.trim().toLowerCase();
   const catalogTracks = (data.tracks || []).filter(t => !catalogQuery || `${t.title||''} ${t.artist||''} ${t.album||''} ${t.genre||''}`.toLowerCase().includes(catalogQuery));
-  const catalogCount = $('adminCatalogCount'); if (catalogCount) catalogCount.textContent = `${catalogTracks.length} of ${(data.tracks||[]).length} shown`;
-  tracksEl.innerHTML = catalogTracks.length ? catalogTracks.map((t) => `<article class="admin-track">
+  const shownCatalogTracks = catalogTracks.slice(0, adminCatalogVisible);
+  const catalogCount = $('adminCatalogCount');
+  if (catalogCount) catalogCount.textContent = `Showing ${shownCatalogTracks.length} of ${catalogTracks.length} matches`;
+  tracksEl.innerHTML = catalogTracks.length ? shownCatalogTracks.map((t) => `<article class="admin-track">
     <div class="admin-track-info"><strong>${esc(t.title)}</strong><span>${esc(t.artist)} · ${esc(t.album || 'Single')} · ${esc(t.genre || 'Other')}</span><small>${esc(t.status)} · ${Number(t.file_size || 0).toLocaleString()} bytes · ${esc(t.audio_key || 'no R2 key')}</small></div>
     <div class="admin-track-actions"><button class="btn btn-glass btn-small" type="button" data-act="admin-edit" data-id="${esc(t.id)}">Edit</button><button class="btn btn-danger btn-small" type="button" data-act="admin-delete" data-id="${esc(t.id)}">Delete</button></div>
   </article>`).join('') : `<div class="empty"><strong>${catalogQuery?'No matching tracks':'No tracks in catalogue yet'}</strong>${catalogQuery?'Try another title, artist, album or genre.':'Upload your first licensed music file above.'}</div>`;
-  auditEl.innerHTML = data.audit?.length ? data.audit.map((a) => `<div class="audit-row"><strong>${esc(a.action)}</strong><span>${new Date(a.created_at).toLocaleString()}</span><small>${esc(JSON.stringify(a.details || {}))}</small></div>`).join('') : `<p class="muted">No administration activity recorded yet.</p>`;
+  if (catalogTracks.length > adminCatalogVisible) {
+    tracksEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>Showing ${shownCatalogTracks.length} of ${catalogTracks.length} tracks</span><button class="btn btn-glass btn-small" type="button" data-act="admin-catalog-more">Show more tracks · ${Math.min(10, catalogTracks.length-adminCatalogVisible)} more</button></div>`);
+  } else if (adminCatalogVisible > 10 && catalogTracks.length) {
+    tracksEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>All ${catalogTracks.length} matching tracks are visible</span><button class="btn btn-glass btn-small" type="button" data-act="admin-catalog-less">Show less</button></div>`);
+  }
+
+  const auditEntries = Array.isArray(data.audit) ? data.audit : [];
+  const shownAuditEntries = auditEntries.slice(0, adminAuditVisible);
+  auditEl.innerHTML = auditEntries.length ? shownAuditEntries.map((a) => `<div class="audit-row"><strong>${esc(a.action)}</strong><span>${new Date(a.created_at).toLocaleString()}</span><small>${esc(JSON.stringify(a.details || {}))}</small></div>`).join('') : `<p class="muted">No administration activity recorded yet.</p>`;
+  if (auditEntries.length > adminAuditVisible) {
+    auditEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>Showing ${shownAuditEntries.length} of ${auditEntries.length} activity records</span><button class="btn btn-glass btn-small" type="button" data-act="admin-audit-more">Show more activity · ${Math.min(8, auditEntries.length-adminAuditVisible)} more</button></div>`);
+  } else if (adminAuditVisible > 8 && auditEntries.length) {
+    auditEl.insertAdjacentHTML('beforeend', `<div class="admin-list-footer"><span>All ${auditEntries.length} activity records are visible</span><button class="btn btn-glass btn-small" type="button" data-act="admin-audit-less">Show less</button></div>`);
+  }
   const status = $('adminStatus');
   if (status) { status.textContent = data.ok ? 'All critical services responding' : 'One or more services need attention'; status.className = `admin-status ${data.ok ? 'up' : 'down'}`; }
 }
 let adminLoading = false, adminOverviewCachedAt = 0;
 async function loadAdminDashboard(force = false) {
-  if (!isAdmin || adminLoading || route().name !== 'admin') return;
-  if (!force && adminOverview && Date.now()-adminOverviewCachedAt < 120000) { renderAdminOverview(adminOverview); return; }
+  const page=route().name;
+  if (!isAdmin || adminLoading || !['admin','diagnostics'].includes(page)) return;
+  if (!force && adminOverview && Date.now()-adminOverviewCachedAt < 120000) {
+    if(page==='admin') renderAdminOverview(adminOverview); else renderIntelligenceDashboard(adminOverview);
+    return;
+  }
   adminLoading = true;
   const status = $('adminStatus'); if (status) status.textContent = 'Checking services…';
   try {
     const data = await workerRequest('/admin/overview');
+    adminOverview=data;
     adminOverviewCachedAt=Date.now();
-    renderAdminOverview(data);
+    if(route().name==='admin') renderAdminOverview(data);
+    else if(route().name==='diagnostics') renderIntelligenceDashboard(data);
   } catch (error) {
     adminLoadError = error.message;
     const health = $('adminHealth');
     if (health) health.innerHTML = `<div class="notice glass">${esc(error.message)}</div>`;
+    const intelligence=$('insightAnalytics');
+    if(intelligence) intelligence.innerHTML=`<div class="intel-empty glass"><strong>Analytics connection unavailable</strong><span>${esc(error.message)}</span></div>`;
     const statusEl = $('adminStatus');
     if (statusEl) { statusEl.textContent = `Dashboard error: ${error.message}`; statusEl.className = 'admin-status down'; }
   } finally { adminLoading = false; }
+}
+function refreshAdminSnapshotFromLoadedCatalogue(addedFileBytes=0) {
+  if(!adminOverview)return;
+  const now=new Date(), m=adminOverview.metrics||(adminOverview.metrics={});
+  adminOverview.tracks=tracks.map(t=>({id:t.id,title:t.title,artist:t.artist,album:t.album,genre:t.genre,status:'published',created_at:t.createdAt||now.toISOString(),duration_seconds:t.duration,audio_key:t.audioKey,file_size:t.fileSize,cover_url:t.coverUrl}));
+  const genreCounts={};tracks.forEach(t=>{const genre=String(t.genre||'Other').trim()||'Other';genreCounts[genre]=(genreCounts[genre]||0)+1;});
+  m.genre_distribution=genreCounts;m.tracks_listed=tracks.length;
+  m.tracks_total=Math.max(Number(m.tracks_total||0),tracks.length);
+  m.tracks_published=Math.max(Number(m.tracks_published||0),tracks.length);
+  if(addedFileBytes>0){
+    m.audio_objects_scanned=Number(m.audio_objects_scanned||0)+1;
+    m.audio_bytes_scanned=Number(m.audio_bytes_scanned||0)+Number(addedFileBytes||0);
+    const day=now.toISOString().slice(0,10);const days=Array.isArray(m.uploads_by_day)?m.uploads_by_day:[];
+    const today=days.find(x=>x.date===day||x.label===day.slice(5));
+    if(today)today.count=Number(today.count||0)+1;
+  }
+  adminOverview.generated_at=now.toISOString();adminOverviewCachedAt=Date.now();
+  if(route().name==='admin')renderAdminOverview(adminOverview);
+  else if(route().name==='diagnostics')renderIntelligenceDashboard(adminOverview);
 }
 
 let adminDetectedArtwork = null, adminDetectedAlbum = null, adminDetectedFile = null, adminDetectionPromise = null;
@@ -749,7 +793,7 @@ async function uploadAdminTrack(form, fileOverride = null, batchMode = false) {
     setAdminMetaStatus('Track published. Select another audio file to scan its tags.');
     notify(`Uploaded “${title}” to Cloudflare R2 and published it.`);
     await loadCatalogue();
-    if(adminOverview){ adminOverview.tracks=tracks.map(t=>({id:t.id,title:t.title,artist:t.artist,album:t.album,genre:t.genre,status:'published',created_at:new Date().toISOString(),duration_seconds:t.duration})); renderAdminOverview(adminOverview); }
+    refreshAdminSnapshotFromLoadedCatalogue(file.size);
     return true;
   } catch (error) {
     console.error('SONORA admin upload:', error);
@@ -910,7 +954,7 @@ const views = {
         <div class="settings-card-head"><div><h2>Account</h2><p>Signed in with Supabase authentication.</p></div><span class="settings-avatar">${esc((user?.email || 'S').slice(0,1).toUpperCase())}</span></div>
         <div class="settings-detail"><span>Email address</span><strong>${esc(user?.email || 'Guest')}</strong></div>
         <div class="settings-detail"><span>Account status</span><strong>${user?.email_confirmed_at || user?.confirmed_at ? 'Email confirmed' : 'Confirmation may be pending'}</strong></div>
-        ${isAdmin ? `<div class="admin-callout"><div><strong>SONORA administration</strong><p>Manage music, view service health, review platform activity and run diagnostics.</p></div><div class="admin-shortcuts"><a class="btn btn-primary" href="#/admin">Admin dashboard</a><a class="btn btn-glass" href="#/diagnostics">Music & Audience Intelligence</a></div></div>` : ''}
+        ${isAdmin ? `<div class="admin-callout"><div><strong>SONORA administration</strong><p>Manage music, view service health and review audience and catalogue analytics.</p></div><div class="admin-shortcuts"><a class="btn btn-primary" href="#/admin">Admin dashboard</a><a class="btn btn-glass" href="#/diagnostics">Music & Audience Intelligence</a></div></div>` : ''}
         <div class="settings-actions"><button class="btn btn-glass" type="button" data-act="password-reset">Send password reset email</button></div>
       </section>
       <section class="settings-card glass">
@@ -982,15 +1026,9 @@ const views = {
     </div>`;
   },
   diagnostics() {
-    return `<div class="page test-page">
-      <div class="test-title"><div><div class="kicker">SONORA MUSIC INTELLIGENCE</div><h1>Music & Audience Intelligence</h1><p class="lede">A live view of listening sessions, audience activity, catalogue quality and platform health.</p></div>
-      <button class="btn btn-primary" id="runTestsBtn" data-act="run-tests" type="button">${ic('activity')}Run checks again</button></div>
-      <section class="audience-live glass"><div class="section-top"><div><h2>Live listening room</h2><p>Active playback sessions across connected browsers.</p></div><span class="storage-pill" id="insightLiveStatus">CONNECTING</span></div><div class="audience-live-grid"><div class="audience-count"><strong id="insightListenerCount">—</strong><span>currently listening</span></div><div id="insightLiveUsers" class="audience-user-list"><div class="chart-empty">Waiting for live presence…</div></div></div></section>
-      <section class="admin-section glass analytics-section"><div class="section-top"><div><h2>Music performance analytics</h2><p>Catalogue mix, upload trend, aggregate listening time and service performance.</p></div><span class="storage-pill">DATA-DRIVEN</span></div><div class="admin-analytics-grid" id="insightAnalytics"><div class="chart-empty">Open the Admin dashboard once to load the current analytics snapshot.</div></div></section>
-      <div class="insight-coverage glass"><strong>Data coverage & privacy</strong><p>Live names and tracks come from active Realtime sessions. Guest sessions are labelled Guest. This browser-only build does not collect or display IP addresses. Historical per-user playtime requires server-side playback-event records; only aggregate lifetime play metrics are available from the current admin API.</p></div>
-      <div class="test-summary glass" id="testSummary"><strong>System checks will run automatically</strong><span>Service health and catalogue checks appear below.</span></div>
-      <div class="test-list" id="testResults"><div class="empty"><strong>Ready to diagnose</strong>Tests are read-only except for temporary playlist and like checks. Temporary test rows are deleted automatically.</div></div>
-
+    return `<div class="page intel-page">
+      <header class="intel-page-header"><div class="intel-brand-lockup"><span class="intel-brand-mark">${ic('activity')}</span><div><div class="kicker">SONORA · MUSIC INTELLIGENCE</div><h1>Music & Audience Intelligence</h1><p class="lede">Understand your audience, catalogue performance and platform health in one place.</p></div></div><div class="intel-header-meta"><span id="intelHeaderLiveBadge" class="intel-live-label"><i></i> Connecting to audience</span><small id="intelHeaderUpdated">Analytics snapshot loads automatically</small></div></header>
+      <div id="insightAnalytics" class="intel-board"><div class="intel-loading glass"><span class="intel-loading-pulse"></span><strong>Preparing your music intelligence dashboard</strong><small>Loading catalogue, playback totals and live audience presence.</small></div></div>
     </div>`;
   }
 };
@@ -1017,7 +1055,7 @@ function render() {
   const si = $('topSearch'); if (document.activeElement !== si) si.value = query;
   syncLike();
   if (current.name === 'admin' && isAdmin) loadAdminDashboard();
-  if (current.name === 'diagnostics' && isAdmin) { if(adminOverview){ const target=$('insightAnalytics'); if(target){ target.id='adminAnalytics'; const holder=document.createElement('div'); holder.id='adminInsights'; holder.hidden=true; target.parentNode.appendChild(holder); renderAdminAnalytics(adminOverview); target.id='insightAnalytics'; holder.remove(); } } if(!window.__sonoraAutoTestsStarted){ window.__sonoraAutoTestsStarted=true; setTimeout(runSystemTests, 80); } }
+  if (current.name === 'diagnostics' && isAdmin) loadAdminDashboard();
 }
 window.addEventListener('hashchange', () => { render(); window.scrollTo({ top:0 }); $('view').focus({ preventScroll:true }); });
 
@@ -1225,245 +1263,119 @@ async function removeFromPlaylist(plId, trackId) {
 }
 
 /* ---------- Music & Audience Intelligence ---------- */
-const testResults = [];
-function paintTests(running = false) {
-  const list = $('testResults');
-  const summary = $('testSummary');
-  if (!list || !summary) return;
-  const passed = testResults.filter((x) => x.status === 'PASS').length;
-  const failed = testResults.filter((x) => x.status === 'FAIL').length;
-  const skipped = testResults.filter((x) => x.status === 'SKIP').length;
-  summary.innerHTML = `<strong>${running ? 'Tests running…' : `${passed} passed · ${failed} failed · ${skipped} skipped`}</strong><span>${running ? 'Checking configured services and application functions.' : `Last run: ${new Date().toLocaleString()} · ${testResults.length} checks completed.`}</span>`;
-  list.innerHTML = testResults.map((x) => `<article class="test-item ${x.status.toLowerCase()}"><div class="test-item-head"><strong>${esc(x.name)}</strong><span class="test-status">${esc(x.status)}</span></div><p>${esc(x.detail)}</p>${x.extra ? `<pre>${esc(x.extra)}</pre>` : ''}</article>`).join('');
+function normaliseMusicKey(value) {
+  return String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 }
-function recordTest(name, status, detail, extra = '') {
-  testResults.push({ name, status, detail, extra });
-  paintTests(true);
+function readableListenTime(seconds) {
+  const value=Math.max(0,Math.floor(Number(seconds)||0));
+  if(value>=3600){const hours=Math.floor(value/3600),mins=Math.floor((value%3600)/60);return `${hours} hr${hours===1?'':'s'}${mins?` ${mins} min`:''}`;}
+  if(value>=60)return `${Math.floor(value/60)} min`;
+  return `${value} sec`;
 }
-async function runSystemTests() {
-  if (!$('testResults')) return;
-  const button = $('runTestsBtn');
-  if (button) { button.disabled = true; button.textContent = 'Running tests…'; }
-  testResults.length = 0;
-  paintTests(true);
-  const check = async (name, fn) => {
-    const start = performance.now();
-    try {
-      const result = await fn();
-      if (result?.skip) recordTest(name, 'SKIP', result.detail);
-      else recordTest(name, 'PASS', `${result?.detail || 'Passed'} (${Math.round(performance.now() - start)} ms)`);
-      return result;
-    } catch (err) {
-      console.error(`[SONORA Test] ${name}`, err);
-      recordTest(name, 'FAIL', err?.message || String(err), err?.stack || '');
-      return { error:err };
-    }
-  };
-  const skip = (detail) => ({ skip:true, detail });
-
-  await check('Website application shell', () => {
-    const required = ['view','audio','play','prev','next','shuffle','repeat','seek','vol','muteBtn','npLike','topSearch','themeBtn','authForm','acctBtn'];
-    const missing = required.filter((id) => !$(id));
-    if (missing.length) throw new Error(`Missing interface elements: ${missing.join(', ')}`);
-    return { detail:`All ${required.length} core controls are present.` };
-  });
-
-  await check('Browser local storage', () => {
-    const key = `sonora-test-${Date.now()}`;
-    localStorage.setItem(key, 'ok');
-    const value = localStorage.getItem(key);
-    localStorage.removeItem(key);
-    if (value !== 'ok') throw new Error('Browser storage did not return the value written.');
-    return { detail:'Temporary test value written and removed successfully.' };
-  });
-
-  await check('Supabase frontend configuration', () => {
-    if (!C.SUPABASE_URL || !/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(C.SUPABASE_URL)) throw new Error('SUPABASE_URL is missing or not a valid Supabase project URL in config.js.');
-    if (!C.SUPABASE_ANON_KEY) throw new Error('SUPABASE_ANON_KEY / publishable key is missing in config.js.');
-    return { detail:`Project URL configured: ${C.SUPABASE_URL}` };
-  });
-
-  await check('Supabase JavaScript SDK', () => {
-    if (!window.supabase?.createClient) throw new Error('Supabase JS SDK did not load. Check the jsDelivr CDN script in index.html.');
-    if (!supabaseConfigured || !sb) throw new Error('Supabase client was not initialized. Check config.js and reload the page.');
-    return { detail:'Supabase SDK and client are initialized.' };
-  });
-
-  let session = null;
-  await check('Supabase authentication session', async () => {
-    if (!sb) throw new Error('Supabase client is unavailable.');
-    const { data, error } = await sb.auth.getSession();
-    if (error) throw error;
-    session = data.session;
-    user = session?.user || user;
-    return { detail:session ? `Signed in as ${session.user.email || session.user.id}.` : 'Supabase Auth is responding. No user is signed in; sign-in, sign-up and password reset need a manual account test.' };
-  });
-
-  let catalogueRows = [];
-  await check('Supabase tracks catalogue', async () => {
-    if (!sb) throw new Error('Supabase client unavailable.');
-    const { data, error } = await sb.from('tracks').select('id,title,artist,album,genre,audio_key,audio_url,duration_seconds,status').eq('status','published').limit(500);
-    if (error) throw error;
-    catalogueRows = data || [];
-    return { detail:catalogueRows.length ? `Read ${catalogueRows.length} published track(s).` : 'Table is readable and currently empty. No sample music is seeded.' };
-  });
-
-  await check('Catalogue duplicate metadata audit', async () => {
-    const norm=(v)=>String(v||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-    const seen=new Map(), duplicates=[];
-    catalogueRows.forEach(track=>{const key=`${norm(track.title)}|${norm(track.artist)}`;if(seen.has(key))duplicates.push(`${track.title} — ${track.artist}`);else seen.set(key,track.id);});
-    if(duplicates.length)return {detail:`Found ${duplicates.length} possible title/artist duplicates: ${duplicates.slice(0,8).join('; ')}. Compare the audio before removing anything.`};
-    return {detail:`No title/artist metadata duplicates found in ${catalogueRows.length} published tracks. Audio fingerprint comparison is not available in the frontend-only build.`};
-  });
-
-  if (session?.user) {
-    await check('Listener preferences table and onboarding state', async () => {
-      const { data, error } = await sb.from('sonora_user_preferences')
-        .select('user_id,preferred_genres,preferred_moods,onboarding_completed')
-        .eq('user_id', session.user.id).maybeSingle();
-      if (error) throw error;
-      return { detail:data ? `Preferences saved; ${data.preferred_genres?.length || 0} genres and ${data.preferred_moods?.length || 0} moods selected.` : 'Preferences table is ready. This account has not completed its music taste setup yet.' };
-    });
-    await check('Supabase playlists read access', async () => {
-      const { error } = await sb.from('playlists').select('id,name').limit(3);
-      if (error) throw error;
-      return { detail:'Authenticated user can read their private playlists.' };
-    });
-    await check('Supabase likes read access', async () => {
-      const { error } = await sb.from('likes').select('track_id').limit(3);
-      if (error) throw error;
-      return { detail:'Authenticated user can read their private likes.' };
-    });
-    await check('Playlist create/read/delete (temporary test)', async () => {
-      const testName = `SONORA_DIAGNOSTIC_${Date.now()}`;
-      const { data, error } = await sb.from('playlists').insert({ user_id:session.user.id, name:testName }).select('id,name').single();
-      if (error) throw error;
-      if (!data?.id) throw new Error('Playlist insert returned no row.');
-      let cleanupError = null;
-      try {
-        const verify = await sb.from('playlists').select('id,name').eq('id',data.id).single();
-        if (verify.error) throw verify.error;
-        if (verify.data?.name !== testName) throw new Error('Temporary playlist could not be read back.');
-      } finally {
-        const del = await sb.from('playlists').delete().eq('id',data.id);
-        cleanupError = del.error;
-      }
-      if (cleanupError) throw new Error(`Temporary playlist was created but cleanup failed: ${cleanupError.message}`);
-      return { detail:'Temporary playlist created, read back and deleted. No permanent playlist was added.' };
-    });
-    await check('Playlist-track mapping create/delete (temporary test)', async () => {
-      if (!catalogueRows.length) return skip('No published track exists yet. Add a real track to test playlist-track mapping.');
-      const testName = `SONORA_DIAGNOSTIC_MAP_${Date.now()}`;
-      const created = await sb.from('playlists').insert({ user_id:session.user.id, name:testName }).select('id').single();
-      if (created.error) throw created.error;
-      let mapError = null, cleanupError = null;
-      try {
-        const linked = await sb.from('playlist_tracks').insert({ playlist_id:created.data.id, track_id:catalogueRows[0].id, position:0 }).select('playlist_id,track_id').single();
-        if (linked.error) throw linked.error;
-        if (!linked.data) throw new Error('Playlist-track row was not returned.');
-        const verify = await sb.from('playlist_tracks').select('track_id').eq('playlist_id',created.data.id).single();
-        if (verify.error) throw verify.error;
-      } catch (e) { mapError = e; }
-      finally {
-        const del = await sb.from('playlists').delete().eq('id',created.data.id);
-        cleanupError = del.error;
-      }
-      if (cleanupError) throw new Error(`Test cleanup failed: ${cleanupError.message}`);
-      if (mapError) throw mapError;
-      return { detail:'Temporary playlist-track relation created, verified and cascade-deleted. No permanent data remains.' };
-    });
-    await check('Likes create/delete (temporary test)', async () => {
-      if (!catalogueRows.length) return skip('No published track exists yet. Add a real track to test likes.');
-      const { data:existing, error:readError } = await sb.from('likes').select('track_id').eq('user_id',session.user.id);
-      if (readError) throw readError;
-      const already = new Set((existing || []).map((x) => x.track_id));
-      const target = catalogueRows.find((t) => !already.has(t.id));
-      if (!target) return skip('Every published track is already liked by this account. No existing like was changed.');
-      const inserted = await sb.from('likes').insert({ user_id:session.user.id, track_id:target.id });
-      if (inserted.error) throw inserted.error;
-      const removed = await sb.from('likes').delete().eq('user_id',session.user.id).eq('track_id',target.id);
-      if (removed.error) throw new Error(`Like was created but cleanup failed: ${removed.error.message}`);
-      return { detail:'A temporary like was inserted and deleted. Existing likes were not changed.' };
-    });
-  } else {
-    recordTest('Supabase playlists / likes permissions', 'SKIP', 'Sign in to run authenticated library checks. Public visitors are not allowed to read other users’ private library rows.');
-    recordTest('Playlist and like write tests', 'SKIP', 'Sign in and add at least one real catalogue track to run temporary CRUD checks.');
+function liveListenerLabel(listener,index) {
+  const type=String(listener.listener_type||'Guest').toLowerCase();
+  if(type==='guest') return `Guest${index>0?` #${index+1}`:''}`;
+  const name=String(listener.listener_name||'Listener').trim();
+  return name.includes('@')?name.split('@')[0]:name;
+}
+function renderIntelligenceLiveBlocks() {
+  const countNode=$('insightListenerCount'),statusNode=$('insightLiveStatus'),usersNode=$('insightLiveUsers');
+  const headerLiveBadge=$('intelHeaderLiveBadge');
+  const count=livePresenceReady?liveListenerSnapshot.length:null;
+  if(headerLiveBadge){headerLiveBadge.textContent=livePresenceReady?'LIVE AUDIENCE':`AUDIENCE ${String(livePresenceStatus||'WAITING').replaceAll('_',' ')}`;headerLiveBadge.classList.toggle('offline',!livePresenceReady);}
+  if(countNode)countNode.textContent=count==null?'—':count.toLocaleString();
+  if(statusNode){statusNode.textContent=livePresenceReady?'LIVE':livePresenceStatus;statusNode.className=`storage-pill ${livePresenceReady?'live-pill':''}`;}
+  let guestNumber=0;
+  const users=liveListenerSnapshot.map(listener=>{
+    const started=Number(listener.started_at)||0;
+    const elapsed=started?Math.max(0,Math.floor((Date.now()-started)/1000)):0;
+    const guestIndex=String(listener.listener_type||'Guest').toLowerCase()==='guest'?guestNumber++:0;
+    return {...listener,display_name:liveListenerLabel(listener,guestIndex),elapsed};
+  }).sort((a,b)=>b.elapsed-a.elapsed);
+  if(usersNode){
+    if(!livePresenceReady) usersNode.innerHTML=`<div class="intel-empty-state"><strong>Live presence is ${esc(livePresenceStatus.toLowerCase())}</strong><span>Active listening sessions will appear after the existing Realtime channel connects.</span></div>`;
+    else if(!users.length) usersNode.innerHTML='<div class="intel-empty-state"><strong>No active listeners right now</strong><span>When someone plays a song, their session and track will appear here.</span></div>';
+    else usersNode.innerHTML=users.slice(0,12).map(listener=>{const guest=String(listener.listener_type||'Guest').toLowerCase()==='guest';return `<article class="intel-user-row"><span class="intel-avatar">${esc(listener.display_name.slice(0,1).toUpperCase())}</span><span class="intel-user-main"><strong>${esc(listener.display_name)}</strong><small>${esc(listener.listener_type||'Guest')} · ${esc(listener.title||'Unknown track')} — ${esc(listener.artist||'Unknown artist')}${guest?' · IP not exposed':''}</small></span><span class="intel-user-duration"><b>${readableListenTime(listener.elapsed)}</b><small>ON TRACK</small></span><i class="intel-playing-dot" aria-label="Playing"></i></article>`;}).join('');
   }
-
-  if (session?.user && isAdmin) {
-    await check('Special administrator account authorization', async () => {
-      const result = await workerRequest('/admin/me');
-      if (!result.is_admin) throw new Error('Worker did not confirm the configured administrator account.');
-      return { detail:`Server verified admin privileges for ${result.email}.` };
-    });
-    await check('Admin dashboard and service metrics API', async () => {
-      const result = await workerRequest('/admin/overview');
-      if (!result.checks) throw new Error('Admin overview did not return service health checks.');
-      const failed = Object.entries(result.checks).filter(([,v]) => !v.ok).map(([k]) => k);
-      if (failed.length) throw new Error(`Admin API reachable, but services need attention: ${failed.join(', ')}.`);
-      return { detail:`Admin API returned catalogue metrics and ${Object.keys(result.checks).length} healthy service checks.` };
-    });
-  } else {
-    recordTest('Special administrator account authorization', 'SKIP', 'The Worker has not verified this session as the allowlisted administrator. Admin API checks run only after server-side verification.');
+  const signed=users.filter(x=>String(x.listener_type||'').toLowerCase()!=='guest').length;
+  const guests=users.length-signed;
+  const audienceMix=$('intelAudienceMix');
+  if(audienceMix) audienceMix.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for Realtime presence.</div>':!users.length?'<div class="chart-empty">No active listeners to segment yet.</div>':svgDonutChart([{name:'Signed in',value:signed},{name:'Guests',value:guests}],'name','value','users');
+  const bands=[{name:'0–5 min',value:0},{name:'5–15 min',value:0},{name:'15–30 min',value:0},{name:'30+ min',value:0}];
+  users.forEach(x=>{const mins=x.elapsed/60;const index=mins<5?0:mins<15?1:mins<30?2:3;bands[index].value++;});
+  const sessionBands=$('intelSessionBands');
+  if(sessionBands)sessionBands.innerHTML=!livePresenceReady?'<div class="chart-empty">Waiting for live sessions.</div>':users.length?svgBarChart(bands,'name','value','chart-bar-engagement'):'<div class="chart-empty">No current sessions to analyse.</div>';
+  const grouped=new Map();
+  users.forEach(listener=>{const id=String(listener.track_id||`${listener.title}|${listener.artist}`);if(!grouped.has(id))grouped.set(id,{name:listener.title||'Unknown track',artist:listener.artist||'Unknown artist',value:0});grouped.get(id).value++;});
+  const liveTracks=[...grouped.values()].sort((a,b)=>b.value-a.value);
+  const tracksNode=$('intelLiveTrackChart');
+  if(tracksNode)tracksNode.innerHTML=!livePresenceReady?'<div class="chart-empty">Live track data is unavailable until presence connects.</div>':liveTracks.length?svgBarChart(liveTracks.slice(0,7).map(x=>({name:`${x.name} · ${x.artist}`,value:x.value})),'name','value','chart-bar-engagement'):'<div class="chart-empty">Nothing is playing right now.</div>';
+  const listeningNow=$('intelCurrentlyPlaying');
+  if(listeningNow){
+    if(!livePresenceReady)listeningNow.innerHTML='<div class="intel-empty-state"><strong>Connecting to live listening</strong><span>Live track data is not available yet.</span></div>';
+    else if(!liveTracks.length)listeningNow.innerHTML='<div class="intel-empty-state"><strong>Nothing is playing</strong><span>Currently playing music will be shown here.</span></div>';
+    else listeningNow.innerHTML=liveTracks.slice(0,4).map(track=>`<div class="intel-now-track"><span class="intel-now-eq"><i></i><i></i><i></i></span><span><strong>${esc(track.name)}</strong><small>${esc(track.artist)}</small></span><b>${track.value} ${track.value===1?'listener':'listeners'}</b></div>`).join('');
   }
-
-  await check('Cloudflare Worker health and R2 binding', async () => {
-    if (!C.STREAM_URL) throw new Error('STREAM_URL is empty in config.js. Set it to https://sonora-stream.sonorabyrockon.workers.dev.');
-    const response = await fetch(`${String(C.STREAM_URL).replace(/\/$/,'')}/health`, { cache:'no-store' });
-    const text = await response.text();
-    let body; try { body = JSON.parse(text); } catch { throw new Error(`Worker returned HTTP ${response.status}, not JSON. Response: ${text.slice(0,300)}`); }
-    if (!response.ok) throw new Error(`Worker health returned HTTP ${response.status}: ${JSON.stringify(body)}`);
-    if (!body.ok) throw new Error(`Worker responded but R2 binding is not healthy: ${JSON.stringify(body)}`);
-    return { detail:`Worker reachable; R2 binding reports healthy. ${C.STREAM_URL}` };
+  const liveUpdated=$('intelLiveUpdated');if(liveUpdated)liveUpdated.textContent=`Presence ${livePresenceReady?'connected':'not connected'} · refreshed ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;
+}
+function renderIntelligenceDashboard(data) {
+  const target=$('insightAnalytics');
+  if(!target)return;
+  const m=data.metrics||{},checks=data.checks||{},catalogue=Array.isArray(data.tracks)?data.tracks:[];
+  const total=Number(m.tracks_total||catalogue.length),published=Number(m.tracks_published||0);
+  const plays=Number(m.total_play_events||0),playSeconds=Number(m.total_play_seconds||0),avgPlay=plays?playSeconds/plays:0;
+  const hours=playSeconds/3600;
+  const genres=Object.entries(m.genre_distribution||{}).sort((a,b)=>b[1]-a[1]).map(([name,value])=>({name,value}));
+  const artistsMap=new Map(),albumsMap=new Map(),duplicateMap=new Map();
+  const quality=[{name:'Title',value:0},{name:'Artist',value:0},{name:'Genre',value:0},{name:'Artwork',value:0},{name:'Audio object',value:0}];
+  catalogue.forEach(track=>{
+    const artist=String(track.artist||'').trim()||'Unknown artist';artistsMap.set(artist,(artistsMap.get(artist)||0)+1);
+    const album=String(track.album||'').trim();if(album&&album.toLowerCase()!=='single')albumsMap.set(album,(albumsMap.get(album)||0)+1);
+    const key=`${normaliseMusicKey(track.title)}|${normaliseMusicKey(track.artist)}`;
+    if(normaliseMusicKey(track.title)&&normaliseMusicKey(track.artist)){if(!duplicateMap.has(key))duplicateMap.set(key,[]);duplicateMap.get(key).push(track);}
+    if(String(track.title||'').trim())quality[0].value++;
+    if(String(track.artist||'').trim())quality[1].value++;
+    if(String(track.genre||'').trim())quality[2].value++;
+    if(String(track.cover_url||'').trim())quality[3].value++;
+    if(String(track.audio_key||'').trim())quality[4].value++;
   });
-
-  await check('Real audio object streaming / byte range', async () => {
-    const t = catalogueRows.find((x) => x.audio_key);
-    if (!t) return skip('No published track with an R2 audio_key exists yet. Once you add a licensed track, this test will request bytes 0–1.');
-    if (!C.STREAM_URL) throw new Error('STREAM_URL is not configured.');
-    const url = `${String(C.STREAM_URL).replace(/\/$/,'')}/stream/${String(t.audio_key).split('/').map(encodeURIComponent).join('/')}`;
-    const response = await fetch(url, { headers:{ Range:'bytes=0-1' }, cache:'no-store' });
-    if (response.status !== 206) throw new Error(`Expected HTTP 206 for byte-range audio request, received ${response.status}. Check R2 object key and Worker range handling.`);
-    const bytes = await response.arrayBuffer();
-    if (bytes.byteLength < 1 || bytes.byteLength > 2) throw new Error(`Range response returned ${bytes.byteLength} bytes; expected 1–2.`);
-    return { detail:`R2 object “${t.title}” returned HTTP 206 with ${bytes.byteLength} byte(s).` };
-  });
-
-  await check('Player controls', () => {
-    const ids = ['audio','play','prev','next','shuffle','repeat','seek','vol','muteBtn','npLike'];
-    const missing = ids.filter((id) => !$(id));
-    if (missing.length) throw new Error(`Missing player controls: ${missing.join(', ')}`);
-    if (!(audio instanceof HTMLAudioElement)) throw new Error('Audio player element is not an HTMLAudioElement.');
-    return { detail:'Audio element and play/pause, previous/next, shuffle, repeat, seek, volume and like controls are present.' };
-  });
-
-  await check('Search and genre filters', () => {
-    if (!$('topSearch') || !document.querySelector('[data-nav="search"]')) throw new Error('Search input or navigation link is missing.');
-    return { detail:`Search UI is ready. ${genres().length} genre(s) currently available from the live catalogue.` };
-  });
-
-  await check('Theme switch', () => {
-    if (!$('themeBtn') || !['dark','light'].includes(document.documentElement.dataset.theme)) throw new Error('Theme controls or theme state are missing.');
-    return { detail:`Theme control present; current theme is ${document.documentElement.dataset.theme}.` };
-  });
-
-  await check('Account and auth forms', () => {
-    const ids = ['auth','authForm','authEmail','authPw','tabIn','tabUp','forgotBtn','guestBtn','acctBtn'];
-    const missing = ids.filter((id) => !$(id));
-    if (missing.length) throw new Error(`Missing account elements: ${missing.join(', ')}`);
-    return { detail:'Sign-in, create-account, password-reset and guest-mode controls are present. A real login/signup requires manual credentials and email confirmation.' };
-  });
-
-  await check('Music & Audience Intelligence route and navigation', () => {
-    if (!document.querySelector('[data-nav="diagnostics"]')) throw new Error('Music & Audience Intelligence navigation link is missing.');
-    return { detail:'Music & Audience Intelligence is available in desktop and mobile navigation.' };
-  });
-
-  const totals = { passed:testResults.filter((x) => x.status === 'PASS').length, failed:testResults.filter((x) => x.status === 'FAIL').length, skipped:testResults.filter((x) => x.status === 'SKIP').length };
-  paintTests(false);
-  if (button) { button.disabled = false; button.innerHTML = `${ic('activity')}Run checks again`; }
-  if (totals.failed) notify(`${totals.failed} diagnostic check(s) failed. Open Music & Audience Intelligence for details.`);
-  else notify('Music & Audience Intelligence completed. Review skipped checks and manual steps.');
+  const artists=[...artistsMap].map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+  const albums=[...albumsMap].map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+  const duplicateGroups=[...duplicateMap.values()].filter(rows=>rows.length>1).sort((a,b)=>b.length-a.length);
+  const duplicates=duplicateGroups.reduce((sum,rows)=>sum+rows.length-1,0);
+  const uploads=m.uploads_by_day||[];
+  const latencies=[{name:'Worker',value:checks.cloudflare_worker?.latency_ms},{name:'Auth',value:checks.supabase_auth?.latency_ms},{name:'Database',value:checks.supabase_database?.latency_ms},{name:'R2 storage',value:checks.r2_storage?.latency_ms}].filter(x=>Number(x.value)>0).map(x=>({name:x.name,ms:Number(x.value)}));
+  const healthy=Object.entries(checks).filter(([key,value])=>['cloudflare_worker','supabase_auth','supabase_database','r2_storage'].includes(key)&&value?.ok).length;
+  const status=healthy===4?'All core services healthy':healthy?`${healthy}/4 core services healthy`:'Service status unavailable';
+  const updated=data.generated_at?new Date(data.generated_at).toLocaleString():new Date().toLocaleString();
+  const headerUpdated=$('intelHeaderUpdated');if(headerUpdated)headerUpdated.textContent=`Last catalogue snapshot · ${updated}`;
+  const qualityBars=quality.map(x=>({name:x.name,value:x.value}));
+  const duplicateHtml=duplicateGroups.length?duplicateGroups.slice(0,6).map(rows=>`<div class="intel-audit-row"><span><strong>${esc(rows[0].title||'Unknown title')}</strong><small>${esc(rows[0].artist||'Unknown artist')} · ${rows.length} matching records</small></span><b class="intel-warning-count">${rows.length-1} extra</b></div>`).join(''):'<div class="intel-empty-state compact"><strong>No title/artist metadata duplicates found</strong><span>The upload form also blocks exact normalised title + artist matches. Audio fingerprint matching is not available in the current catalogue.</span></div>';
+  target.innerHTML=`
+    <div class="intel-board-topline"><span class="intel-live-label"><i></i> MUSIC INTELLIGENCE</span><span id="intelDataStatus" class="intel-data-status">${esc(status)}</span><small id="intelDataUpdated">Snapshot · ${esc(updated)}</small></div>
+    <section class="intel-live-grid">
+      <article class="intel-panel intel-live-panel">
+        <div class="intel-panel-head"><div><span class="intel-eyebrow">REALTIME AUDIENCE</span><h2>Live listening room</h2><p>People listening across connected browsers right now.</p></div><span id="insightLiveStatus" class="storage-pill">CONNECTING</span></div>
+        <div class="intel-live-main"><div class="intel-live-count"><strong id="insightListenerCount">—</strong><span>active listeners</span><small id="intelLiveUpdated">Waiting for live presence</small></div><div id="intelCurrentlyPlaying" class="intel-playing-list"><div class="chart-empty">Waiting for active tracks…</div></div></div>
+        <div class="intel-user-head"><strong>Live listeners</strong><span>Display name · track · time on current track</span></div>
+        <div id="insightLiveUsers" class="intel-user-list"><div class="chart-empty">Waiting for live presence…</div></div>
+      </article>
+      <article class="intel-panel intel-audience-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">AUDIENCE COMPOSITION</span><h2>Who is listening</h2><p>Signed-in accounts versus guest sessions.</p></div></div><div id="intelAudienceMix" class="intel-chart-visual"><div class="chart-empty">Waiting for live presence…</div></div><div class="intel-subchart"><h3>Time on current track</h3><div id="intelSessionBands"><div class="chart-empty">Waiting for sessions…</div></div></div></article>
+    </section>
+    <div class="intel-chart-grid">
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">MUSIC CATALOGUE</span><h2>Genre distribution</h2><p>How published and listed tracks are distributed by genre.</p></div></div>${svgDonutChart(genres.slice(0,7),'name','value','tracks')}${genres.length>7?`<details class="intel-more"><summary>Show ${genres.length-7} more genres</summary>${svgBarChart(genres.slice(7),'name','value','chart-bar-engagement')}</details>`:''}</article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">CATALOGUE GROWTH</span><h2>Upload momentum</h2><p>New catalogue records by day · last seven days.</p></div></div>${svgUploadTrend(uploads)}</article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">LIVE PLAYBACK</span><h2>What is playing now</h2><p>Current active listening sessions grouped by track.</p></div></div><div id="intelLiveTrackChart"><div class="chart-empty">Waiting for active tracks…</div></div></article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">ARTIST CATALOGUE</span><h2>Artists by track count</h2><p>Catalogue depth, not play rankings.</p></div></div>${artists.length?svgBarChart(artists.slice(0,7),'name','value','chart-bar-engagement'):'<div class="chart-empty">No artist catalogue records yet.</div>'}${artists.length>7?`<details class="intel-more"><summary>Show ${artists.length-7} more artists</summary>${svgBarChart(artists.slice(7),'name','value','chart-bar-engagement')}</details>`:''}</article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">LISTENING FOOTPRINT</span><h2>Playback activity</h2><p>Lifetime aggregate metrics currently exposed by SONORA.</p></div></div><div class="intel-playback-stats"><div><span>Play events</span><strong>${plays.toLocaleString()}</strong><small>Recorded playback sessions</small></div><div><span>Total listening time</span><strong>${readableListenTime(playSeconds)}</strong><small>${hours.toFixed(2)} hours combined</small></div><div><span>Average per play</span><strong>${readableListenTime(avgPlay)}</strong><small>${plays?'Derived from total seconds ÷ play events':'No recorded play events yet'}</small></div></div><div class="intel-footprint-bars">${svgBarChart([{name:'Recorded plays',value:plays}],'name','value','chart-bar-engagement')}</div></article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">CATALOGUE QUALITY</span><h2>Metadata coverage</h2><p>Completeness across the returned catalogue records.</p></div></div>${svgBarChart(qualityBars,'name','value','chart-bar-engagement')}<p class="intel-chart-foot">${catalogue.length.toLocaleString()} returned catalogue records · album is optional for singles.</p></article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">COLLECTIONS</span><h2>Album depth</h2><p>Largest album and soundtrack groups by track count.</p></div></div>${albums.length?svgBarChart(albums.slice(0,7),'name','value','chart-bar-engagement'):'<div class="chart-empty">No album metadata found yet.</div>'}${albums.length>7?`<details class="intel-more"><summary>Show ${albums.length-7} more albums</summary>${svgBarChart(albums.slice(7),'name','value','chart-bar-engagement')}</details>`:''}</article>
+      <article class="intel-panel intel-chart-panel"><div class="intel-panel-head"><div><span class="intel-eyebrow">PLATFORM PERFORMANCE</span><h2>Service response time</h2><p>Latest endpoint probes · lower is faster.</p></div></div>${latencies.length?svgBarChart(latencies.map(x=>({name:x.name,value:x.ms})),'name','value','chart-bar-latency'):'<div class="chart-empty">No latency samples available.</div>'}<div class="intel-service-status">${[['Cloudflare Worker',checks.cloudflare_worker],['Supabase Auth',checks.supabase_auth],['Supabase database',checks.supabase_database],['R2 storage',checks.r2_storage]].map(([name,item])=>`<span><i class="${item?.ok?'is-up':'is-down'}"></i>${esc(name)}</span>`).join('')}</div></article>
+    </div>
+    <section class="intel-panel intel-catalogue-audit"><div class="intel-panel-head"><div><span class="intel-eyebrow">MUSIC INTEGRITY</span><h2>Duplicate & catalogue audit</h2><p>Automated metadata checks against the current returned catalogue.</p></div><span class="intel-audit-state ${duplicates?'has-warning':'is-clean'}">${duplicates?`${duplicates} possible duplicates`:'No metadata duplicates'}</span></div><div class="intel-audit-grid"><div class="intel-audit-summary"><div><span>Potential duplicate rows</span><strong>${duplicates.toLocaleString()}</strong></div><div><span>Published tracks</span><strong>${published.toLocaleString()}</strong></div><div><span>Catalogue records</span><strong>${total.toLocaleString()}</strong></div></div><div class="intel-audit-list">${duplicateHtml}</div></div><p class="intel-chart-foot">Duplicate detection compares normalised title + artist metadata. It does not perform an audio fingerprint comparison, so alternate filenames or metadata may still represent the same recording.</p></section>
+    <details class="intel-panel intel-more-panel"><summary>Show more platform details</summary><div class="intel-details-grid"><div><h3>Service and storage notes</h3><p>${esc(m.metrics_note||'Metrics are based on the latest admin overview response.')}</p><p>R2 objects scanned: ${Number(m.audio_objects_scanned||0).toLocaleString()} · Storage: ${(Number(m.audio_bytes_scanned||0)/1024**3).toFixed(3)} GB · Snapshot duration: ${Number(data.elapsed_ms||0)} ms.</p></div><div><h3>Data coverage</h3><p>Live names, current tracks and session duration come from the existing Realtime presence channel. Historical playtime is available only as platform-wide totals; the existing admin metrics do not expose past play events by individual user.</p><p>Guest IP addresses are not read or displayed in this browser dashboard.</p></div><div><h3>Catalogue protection</h3><p>Uploads are blocked when normalised title and artist match an existing catalogue item. This is a metadata check, not proof of identical audio content.</p></div></div></details>
+    <div class="intel-board-footer"><span><i class="intel-health-dot"></i>${esc(status)}</span><span>Analytics snapshot · ${esc(updated)} · Realtime audience updates independently</span></div>`;
+  renderIntelligenceLiveBlocks();
 }
 
 /* ---------- delegated clicks ---------- */
@@ -1482,7 +1394,6 @@ $('view').addEventListener('click', (e) => {
       case 'go': location.hash = `#/${a.dataset.to}`; break;
       case 'newpl': newPlaylistDialog(); break;
       case 'delpl': deletePlaylist(id); break;
-      case 'run-tests': runSystemTests(); break;
       case 'open-album': e.preventDefault(); location.hash = `#/album/${encodeURIComponent(a.dataset.albumId || '')}`; break;
       case 'pref-toggle': togglePreference(a.dataset.kind, a.dataset.value); break;
       case 'save-preferences': saveUserPreferences(true); break;
@@ -1490,6 +1401,10 @@ $('view').addEventListener('click', (e) => {
       case 'theme-accent': applyTheme(themeMode, a.dataset.value, true); render(); break;
       case 'save-appearance': applyTheme(themeMode, themeAccent, true); saveUserPreferences(false, true); break;
       case 'admin-refresh': loadAdminDashboard(true); break;
+      case 'admin-catalog-more': adminCatalogVisible += 10; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'admin-catalog-less': adminCatalogVisible = 10; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'admin-audit-more': adminAuditVisible += 8; if (adminOverview) renderAdminOverview(adminOverview); break;
+      case 'admin-audit-less': adminAuditVisible = 8; if (adminOverview) renderAdminOverview(adminOverview); break;
       case 'admin-delete': deleteAdminTrack(id); break;
       case 'admin-edit': editAdminTrack(id); break;
       case 'signout': signOutUser(); break;
@@ -1500,7 +1415,7 @@ $('view').addEventListener('click', (e) => {
   if (r) play(r.dataset.id, r.dataset.ctx);
 });
 $('view').addEventListener('input', (e) => {
-  if (e.target.id === 'adminCatalogSearch') { adminCatalogQuery = e.target.value; if (adminOverview) renderAdminOverview(adminOverview); const search=$('adminCatalogSearch'); if(search){search.focus();search.setSelectionRange(search.value.length,search.value.length);} }
+  if (e.target.id === 'adminCatalogSearch') { adminCatalogQuery = e.target.value; adminCatalogVisible = 10; if (adminOverview) renderAdminOverview(adminOverview); const search=$('adminCatalogSearch'); if(search){search.focus();search.setSelectionRange(search.value.length,search.value.length);} }
   if (e.target.id === 'prefDisplayName') preferenceNameDraft = e.target.value;
   if (e.target.id === 'autoplayNext') autoplayDraft = e.target.checked;
   if (e.target.id === 'settingsVolume') { const value=Math.max(0,Math.min(100,Number(e.target.value)||0)); $('vol').value=String(value); setVol(value); store.set('sonora-vol',value); const label=$('settingsVolumeValue'); if(label)label.textContent=`${value}%`; }
@@ -1593,10 +1508,10 @@ function refreshAccount() {
   $('syncText').textContent = user ? (isAdmin ? 'Administrator account · cloud library synced.' : 'Likes and playlists follow you across devices.') : 'Likes and playlists stay on this device until you sign in.';
   const nav = $('adminNav');
   if (nav) nav.classList.toggle('hidden', !isAdmin);
-  const tests = $('diagnosticsNav');
-  if (tests) tests.classList.toggle('hidden', !isAdmin);
-  const mobileTests = $('mobileDiagnosticsNav');
-  if (mobileTests) mobileTests.classList.toggle('hidden', !isAdmin);
+  const intelligenceNav = $('diagnosticsNav');
+  if (intelligenceNav) intelligenceNav.classList.toggle('hidden', !isAdmin);
+  const mobileIntelligenceNav = $('mobileDiagnosticsNav');
+  if (mobileIntelligenceNav) mobileIntelligenceNav.classList.toggle('hidden', !isAdmin);
 }
 async function signOutUser() {
   if (!sb) return;

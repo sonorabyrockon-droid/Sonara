@@ -1,0 +1,27 @@
+SONORA 3.10 — MUSIC & AUDIENCE INTELLIGENCE (FRONTEND ONLY)
+
+DESIGN
+- Reworked the former manual System Test route into a responsive Music & Audience Intelligence dashboard, based on the approved SONORA dark analytics mockup.
+- Added a Power BI-inspired layout with chart cards, live listening room, audience mix, genre distribution, seven-day catalogue growth, currently playing tracks, artist/album depth, aggregate playback footprint, metadata coverage, duplicate-metadata audit and service response-time charts.
+- Added expandable Show more sections for additional genre, artist, album and platform detail.
+- Renamed the mobile navigation item to Intelligence and made the audience connection state explicit.
+
+LIVE AUDIENCE
+- Uses the existing Supabase Realtime presence channel and existing listener payloads.
+- Shows active listening sessions, display name (or Guest), current track and elapsed time on the current track.
+- Guest IP addresses are not collected or exposed by the current frontend and are intentionally not displayed.
+- The live count represents currently present listening sessions, not verified unique people.
+
+DATA LIMITS
+- The existing admin overview endpoint exposes platform-wide play-event and listening-second totals, not historical per-user playback events.
+- As a result, this frontend does not fabricate historical user-level playtime, retention, unique listeners or per-user top songs.
+- Current-track elapsed time is not a complete visit/session duration.
+- Duplicate checks compare normalized title + artist metadata. They are not audio fingerprint matching.
+
+PERFORMANCE / REFRESH
+- Admin and Intelligence reuse the same frontend analytics snapshot for two minutes while navigating between the two screens.
+- Successful uploads reload the catalogue and update the existing client-side snapshot instead of forcing another full overview request.
+
+SERVER BOUNDARY
+- No Cloudflare Worker code, SQL, database schema, API handler, config, deployment file or service worker was changed in this update.
+- Only frontend JavaScript, CSS, HTML navigation label and project documentation were updated.

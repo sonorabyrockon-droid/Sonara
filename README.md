@@ -114,11 +114,13 @@ The account button opens Settings, where listeners can update their display name
 
 For files larger than 100 MB, use a multipart-capable upload approach; do not raise the limit without checking the Cloudflare plan/request body limits.
 
-## 7. Diagnostics
+## 7. Music & Audience Intelligence
 
-Use **System Test → Run all tests** for client connectivity, Auth, Data API, R2 health and playback range checks.
+Use **Music & Audience Intelligence** for a visual analytics view of the live Realtime listening room, currently playing tracks, signed-in versus guest sessions, current-track elapsed time, genre distribution, catalogue growth, artist and album depth, aggregate playback totals, metadata coverage, duplicate metadata checks and service response times. Expand the **Show more** sections for additional genres, artists, albums and platform details.
 
-Use the Admin Dashboard → **Refresh status** for a server-side view of:
+The dashboard uses the existing `/admin/overview` response and Supabase Realtime presence channel. It does not create historical per-user listening records. Historical user-level playtime and unique-listener cohorts require backend event data that is not exposed by the current API. Guest IP addresses are not collected or displayed in the frontend. Duplicate detection compares normalised title and artist metadata; it is not audio fingerprinting.
+
+Use the Admin Dashboard → **Refresh status** for a refreshed server-side view of:
 - Supabase Auth availability
 - Supabase Data API/database table access
 - R2 bucket binding and listing availability
