@@ -37,6 +37,7 @@ let preferencesSchemaReady = false;
 let userPreferences = { display_name:'', preferred_genres:[], preferred_moods:[], onboarding_completed:false, autoplay_next:store.get('sonora-autoplay-next', true), theme_mode:'system', theme_accent:'violet' };
 let themeMode = localStorage.getItem('sonora-theme-mode') || 'system';
 let themeAccent = localStorage.getItem('sonora-theme-accent') || 'violet';
+let motionMode = localStorage.getItem('sonora-motion') || 'auto';
 let preferenceDraft = { genres:[], moods:[] };
 let preferenceNameDraft = '';
 let autoplayDraft = store.get('sonora-autoplay-next', true);
@@ -91,6 +92,14 @@ function applyTheme(mode = themeMode, accent = themeAccent, save = false) {
     try { localStorage.setItem('sonora-theme-mode', themeMode); localStorage.setItem('sonora-theme-accent', themeAccent); localStorage.setItem('sonora-theme', resolved); } catch { /* ignore */ }
   }
 }
+function applyMotion(mode = motionMode, save = false) {
+  motionMode = ['auto','full','reduced','off'].includes(mode) ? mode : 'auto';
+  const resolved = motionMode === 'auto' ? (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduced' : 'full') : motionMode;
+  document.documentElement.dataset.motion = resolved;
+  if (save) { try { localStorage.setItem('sonora-motion', motionMode); } catch { /* ignore */ } }
+}
+applyMotion(motionMode, false);
+window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener?.('change', () => { if (motionMode === 'auto') applyMotion('auto', false); });
 $('themeBtn').addEventListener('click', () => {
   const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   applyTheme(next, themeAccent, true);
@@ -285,8 +294,9 @@ const filtered = () => {
   const q = query.trim().toLowerCase();
   return tracks.filter((t) => (genre === 'All' || t.genre === genre) && (!q || `${t.title} ${t.artist} ${t.album} ${t.genre}`.toLowerCase().includes(q)));
 };
+const skeletonGrid = (n = 8) => `<div class="skeleton-wrap" role="status" aria-busy="true"><span class="sr">Loading music…</span><div class="grid skeleton-grid" aria-hidden="true">${Array.from({ length:n }, () => '<div class="sk-card"><i class="sk sk-cover"></i><i class="sk sk-line"></i><i class="sk sk-line short"></i></div>').join('')}</div></div>`;
 const emptyCatalogue = () => loadError ? empty('Music could not be loaded', 'Check your connection, then refresh the page.')
-  : loaded || !cloud ? empty('No music yet', 'Tracks added to the SONORA catalogue will appear here.') : empty('Loading music…', 'One moment.');
+  : loaded || !cloud ? empty('No music yet', 'Tracks added to the SONORA catalogue will appear here.') : skeletonGrid();
 
 
 /* ---------- listener preferences + owner administration ---------- */
@@ -1426,6 +1436,10 @@ const views = {
           <button class="theme-palette-option ${themeAccent==='emerald'?'selected':''}" type="button" data-act="theme-accent" data-value="emerald" aria-pressed="${themeAccent==='emerald'}"><span class="palette-swatch emerald-swatch"><i></i><i></i></span><strong>Emerald</strong><small>Green & mint</small></button>
           <button class="theme-palette-option ${themeAccent==='rose'?'selected':''}" type="button" data-act="theme-accent" data-value="rose" aria-pressed="${themeAccent==='rose'}"><span class="palette-swatch rose-swatch"><i></i><i></i></span><strong>Rose</strong><small>Pink & coral</small></button>
         </div>
+        <div class="settings-subhead motion-subhead"><div><h3>Motion</h3><p>Animations, page transitions and the colour-reactive player. Auto follows your device’s reduce-motion setting.</p></div></div>
+        <div class="motion-options" role="group" aria-label="Motion">
+          ${[['auto','Auto'],['full','Full'],['reduced','Reduced'],['off','Off']].map(([v,l]) => `<button class="chip pref-chip" type="button" data-act="motion-mode" data-value="${v}" aria-pressed="${motionMode===v}">${l}</button>`).join('')}
+        </div>
         <div class="settings-subhead playback-subhead"><div><h3>Playback behaviour</h3><p>Control how music continues on this device.</p></div></div>
         <label class="setting-check playback-check"><input type="checkbox" id="autoplayNext" ${autoplayDraft ? 'checked' : ''}> <span><strong>Autoplay next track</strong><small>Continue playing the queue when a song ends.</small></span></label>
         <div class="settings-volume"><div><label for="settingsVolume">DEFAULT PLAYER VOLUME</label><strong id="settingsVolumeValue">${Number($('vol')?.value ?? store.get('sonora-vol',80))}%</strong></div><input type="range" id="settingsVolume" min="0" max="100" value="${Number($('vol')?.value ?? store.get('sonora-vol',80))}" aria-label="Default player volume"></div>
@@ -1502,14 +1516,15 @@ function render() {
   if (current.name === 'admin' && isAdmin) loadAdminDashboard();
   if (current.name === 'diagnostics' && isAdmin) loadAdminDashboard();
 }
-window.addEventListener('hashchange', () => { render(); window.scrollTo({ top:0 }); $('view').focus({ preventScroll:true }); });
+window.addEventListener('hashchange', () => { render(); window.scrollTo({ top:0 }); $('view').focus({ preventScroll:true }); window.SonoraUX?.routeEnter($('view')); });
 
 /* ---------- playback ---------- */
 const setIcon = (btn, name) => { btn.innerHTML = ic(name); };
 function syncPlayerControls() {
   const playing = Boolean(active && !audio.paused);
+  document.body.classList.toggle('is-playing',playing);document.body.classList.toggle('is-paused',!playing);
   [['play',playing],['expandedPlay',playing]].forEach(([id,on]) => {
-    const b=$(id); if(!b)return; setIcon(b,on?'pause':'play'); b.setAttribute('aria-label',on?'Pause':'Play');
+    const b=$(id); if(!b)return; const was=b.getAttribute('aria-label'); setIcon(b,on?'pause':'play'); b.setAttribute('aria-label',on?'Pause':'Play'); if(was&&was!==(on?'Pause':'Play'))window.SonoraUX?.pop(b);
   });
   [['shuffle',shuffle],['expandedShuffle',shuffle]].forEach(([id,on])=>{const b=$(id);if(!b)return;b.classList.toggle('on',on);b.setAttribute('aria-pressed',String(on));b.setAttribute('aria-label',on?'Shuffle on':'Shuffle off');});
   const repeatLabel = repeatMode==='one'?'Repeat one':repeatMode==='all'?'Repeat all':'Repeat off';
@@ -1555,8 +1570,13 @@ function openNowPlaying(showQueue=false) {
   if(!active){notify('Pick a song to start listening.');return;}
   const panel=$('nowPlayingExpanded');nowPlayingReturnFocus=document.activeElement;panel.classList.remove('hidden');panel.setAttribute('aria-hidden','false');document.body.classList.add('now-playing-open');syncExpandedPlayer();renderExpandedQueue();$('closeNowPlaying').focus({preventScroll:true});
   if(showQueue)showExpandedQueue(true);
+  window.SonoraUX?.openPlayer(panel,$('npCover'),$('expandedCover'));
 }
-function closeNowPlaying() {const panel=$('nowPlayingExpanded');panel.classList.add('hidden');panel.setAttribute('aria-hidden','true');document.body.classList.remove('now-playing-open');if(nowPlayingReturnFocus?.focus)nowPlayingReturnFocus.focus({preventScroll:true});}
+function closeNowPlaying() {
+  const panel=$('nowPlayingExpanded'); if(panel.classList.contains('hidden'))return;
+  const finish=()=>{panel.classList.add('hidden');panel.setAttribute('aria-hidden','true');document.body.classList.remove('now-playing-open');if(nowPlayingReturnFocus?.focus)nowPlayingReturnFocus.focus({preventScroll:true});};
+  if(window.SonoraUX?.closePlayer)window.SonoraUX.closePlayer(panel,$('npCover'),$('expandedCover'),finish);else finish();
+}
 function showExpandedQueue(show) {const q=$('expandedQueue');if(!q)return;q.classList.toggle('hidden',!show);$('expandedQueueToggle').setAttribute('aria-expanded',String(show));if(show)q.scrollIntoView({block:'nearest',behavior:'smooth'});}
 function setShuffle(value) {shuffle=Boolean(value);store.set('sonora-shuffle',shuffle);syncPlayerControls();}
 function cycleRepeat() {repeatMode=repeatMode==='off'?'all':repeatMode==='all'?'one':'off';audio.loop=repeatMode==='one';store.set('sonora-repeat-mode',repeatMode);syncPlayerControls();notify(repeatMode==='off'?'Repeat off':repeatMode==='all'?'Repeat all':'Repeating this song');}
@@ -1565,7 +1585,7 @@ function setActive(t) {
   $('npTitle').textContent = t.title; $('npArtist').textContent = t.artist;
   updateCoverElement($('npCover'),t);
   $('dur').textContent = fmt(t.duration); $('cur').textContent = '0:00'; setSeek(0);
-  store.set('sonora-last', t.id); syncLike();syncExpandedPlayer();renderExpandedQueue();
+  store.set('sonora-last', t.id); syncLike();syncExpandedPlayer();renderExpandedQueue();window.SonoraUX?.trackChanged(t);
   if ('mediaSession' in navigator && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title:t.title, artist:t.artist, album:t.album, artwork:t.coverUrl?[{src:t.coverUrl,sizes:'512x512',type:'image/jpeg'}]:[] });
 }
 function load(t, autoplay) {
@@ -1998,6 +2018,7 @@ $('view').addEventListener('click', (e) => {
       case 'pref-toggle': togglePreference(a.dataset.kind, a.dataset.value); break;
       case 'save-preferences': saveUserPreferences(true); break;
       case 'theme-mode': applyTheme(a.dataset.value, themeAccent, true); render(); break;
+      case 'motion-mode': applyMotion(a.dataset.value, true); render(); break;
       case 'theme-accent': applyTheme(themeMode, a.dataset.value, true); render(); break;
       case 'save-appearance': applyTheme(themeMode, themeAccent, true); saveUserPreferences(false, true); break;
       case 'admin-refresh': loadAdminDashboard(true); break;
@@ -2330,5 +2351,15 @@ async function init() {
   await loadCatalogue();
   if (!user) await loadLibrary();
 }
+window.SonoraApp = {
+  trackById: (id) => byId(id),
+  isLiked: (id) => liked.has(id),
+  toggleLike: (id) => toggleLike(id),
+  addToQueue: (id) => addToQueue(id),
+  addToPlaylist: (id) => addDialog(id),
+  artistHash: (t) => `#/artist/${encodeURIComponent(artistKey(t.artist))}`,
+  albumHash: (t) => { const k = albumGroupKey(String(t.album || '').trim()); return k && albumEntries().some((a) => a.id === k) ? `#/album/${encodeURIComponent(k)}` : ''; },
+  notify: (m) => notify(m)
+};
 init();
 })();

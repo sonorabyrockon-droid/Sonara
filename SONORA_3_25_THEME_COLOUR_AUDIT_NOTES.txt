@@ -1,0 +1,44 @@
+SONORA 3.25 — THEME COLOUR AUDIT (dark / light), LOGIN + LIKED SONGS (frontend CSS only; no SQL / Worker / config / app.js changes)
+
+Problems found
+ 1. ~25 status colours (greens, reds, ambers, blue) were hard-coded for dark mode and had 1.9–2.8:1 contrast in light mode
+    (admin status pills, health dots, live/"playing" tags, danger button, insight cards, upload error/progress).
+ 2. White text on the LIGHT Ocean / Emerald / Rose accent gradients was 2.8–4.3:1 (Sign in button, chips, avatars).
+ 3. Liked songs hero: the "N songs · This device" line was dark grey on purple in light mode (unreadable), and the
+    Play button was purple-on-purple and blended into the banner (both themes).
+ 4. Light-theme chart / progress bars used dark-mode gradient colours.
+
+Fixes (styles.css)
+ - New theme tokens in BOTH themes: --ok --warn --bad --info --on-accent --liked-1/2/3.
+   Dark keeps the bright values; light uses darker values that pass 4.5:1 text contrast.
+ - 56 hard-coded colour literals replaced by the tokens (soft backgrounds use color-mix on the same tokens).
+ - Light Ocean / Emerald / Rose gradients darkened so white button text is >= 4.5:1 on the gradient's start stop (~4.1 at the end stop).
+ - Primary button / big-play shadow now follows the active accent instead of fixed purple-pink.
+ - Liked hero: opaque token gradient (white text passes in both themes), higher-specificity text colours,
+   white Play button with accent-coloured label.
+ - Light-theme overrides for bar-track, mini-progress and upload progress fills.
+ - Intentionally unchanged: cover art colours, theme-preview swatches, white icons on gradients.
+
+Verified in headless Chromium (mock backend, guest mode): login + Liked songs in dark and light at 1280px and 390px, no JS errors.
+Not tested: Admin / Live audience screens visually (need admin session) — fixed by token swap + contrast calculation only.
+Version bumped to 3.25.0 (index.html, sw.js cache keys).
+
+
+=== 3.25 (part 2) MOTION LAYER + TRACK MENU ===
+New file: sonora-ux.js (progressive enhancement; the app works if it fails to load). Hooks added to app.js, styles appended to styles.css.
+
+Motion (all respect Settings > Appearance > Motion: Auto / Full / Reduced / Off; Auto follows the device's reduce-motion setting)
+ - Page transitions: fade + slide between pages; cards/rows stagger in; content below the fold reveals on scroll (with a failsafe so nothing stays hidden).
+ - Mini player -> full player: the cover flies from the mini player to full size (and back on close); controls rise in.
+ - Colour-reactive full player: slow drifting colour background taken from the cover art (1.2 s colour crossfade between songs).
+   Cover colours are read via canvas; if the image host does not send CORS headers it falls back to the track's own hue palette.
+ - Cover shrinks when paused and swells when playing; mini-player cover glows while playing.
+ - Track change: title / artist / cover animate in. Long titles scroll (marquee) in the mini and full player.
+ - Like: particle burst + haptic tap on phones; play/pause icon pops; buttons have press feedback; seek thumb grows on hover/drag.
+ - 3D tilt on album/track cards (mouse only), sliding active-nav pill, springy toast.
+ - Skeleton shimmer placeholders while the catalogue loads (replaces the "Loading music…" text).
+New feature: track menu — right-click (desktop), long-press (phone/tablet), or Menu key: Add to queue, Add to playlist, Like/Unlike, Go to artist, Go to album, Share / Copy song name.
+ Popover on desktop, bottom sheet on touch; keyboard accessible (Arrow keys, Esc).
+Motion preference is stored on the device only (localStorage 'sonora-motion'); it is not synced to the account.
+Tested (headless Chromium, mocked backend): dark + light, 1280 and 390 px; right-click menu + actions, long-press sheet, player open/close, ambient colours, like burst, skeleton, Motion setting (Off), OS reduce-motion -> Reduced. No JS errors.
+Not done (deliberately, per plan): swipe gestures, crossfade, lyrics, offline downloads.
