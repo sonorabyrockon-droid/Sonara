@@ -58,3 +58,27 @@ Causes of "cut off" parts and fixes:
  7. Mini player / row buttons got larger invisible touch areas; 100dvh used instead of 100vh (iOS toolbar); dialog max-height respects insets; text-size-adjust fixed for iOS landscape.
 Not tested on real devices: notch/home-bar spacing was verified by CSS + simulated insets, not on a physical iPhone.
 Version 3.26.0 (cache name + ?v= strings bumped so phones pick up new files).
+
+
+=== 3.27 BACK NAVIGATION + NOTIFICATIONS (iPhone + Android) ===
+Back navigation
+ - Back arrow in the top bar on phones (<=860px) on every page that is not a main tab (album, artist, playlist, settings, admin...). Goes to the previous page; if there is no history (deep link / installed app) it goes to the parent page.
+ - Android back button / back gesture and iPhone swipe-back close the top layer first: track menu, dialogs, full player, notification panel; only then change the page.
+ - Scroll position is restored when you go back.
+ - Browser/status-bar colour follows the light/dark theme.
+Lock-screen / notification-shade player (Spotify / JioSaavn / Wynk style)
+ - Artwork always present: real cover in 6 sizes, or generated artwork (gradient + initial) for tracks without a cover.
+ - Seek bar with live position in the notification (Media Session position state); previous / play-pause / next / seek-to.
+ - On phones seek-back/forward buttons are not registered so previous/next keep their slots (as on Spotify/JioSaavn); the seek bar still scrubs.
+Notifications
+ - Bell in the top bar with unread count + notification centre (popover on desktop, bottom sheet on phones). Stored on the device (last 50). Mark all read / clear / tap to open.
+ - Settings > Notifications: turn on phone notifications (asked only when you tap, never on first load), send a test, switches for New releases / Sleep timer / Quiet hours 10pm-8am.
+ - New-release alerts: checked at start, every few minutes and when you return to the app (also while music keeps playing in the background). First run only records the current catalogue (no spam).
+ - Sleep-timer-finished alert. App-icon badge shows the unread count where supported.
+ - Phone notifications are shown only when the app is in the background; when it is open you get the in-app toast + bell entry.
+ - sw.js: notification tap opens/focuses SONORA at the right page; a push handler is included for future server push.
+Limits (honest): alerts fire only while SONORA's page is alive (app open, or playing in the background). Alerts when the app is fully closed need server push (VAPID keys, a subscriptions table and a sender) - not set up here.
+iPhone: notifications work only for the app added to the Home Screen (iOS 16.4+); the Settings card explains this.
+At 340px width and below the top-bar theme button is hidden to keep the search box usable (theme is still in Settings).
+Tested (headless Chromium, mocked backend, simulated permission): back button + deep link fallback, system back closing player/menu/notification panel, scroll restore, artwork generation, test/sleep/new-release notifications, quiet-hours chip, dark+light, desktop + phone. Not tested on real phones; system notification display uses the browser's own UI.
+Version 3.27.0.

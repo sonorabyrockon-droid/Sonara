@@ -258,6 +258,7 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 function closeMenu(returnFocus = true) {
   if (!menu) return;
   const m = menu, bd = backdrop, origin = menuOrigin; menu = backdrop = menuOrigin = null;
+  layerClosed('menu');
   const remove = () => { m.remove(); bd?.remove(); };
   if (canAnimate()) { m.classList.add('closing'); bd?.classList.add('closing'); setTimeout(remove, 150); } else remove();
   if (returnFocus && origin?.isConnected && origin.focus) origin.focus({ preventScroll: true });
@@ -282,6 +283,7 @@ function openMenu(trackId, x, y, origin, sheet) {
   menu.innerHTML = `<div class="ctx-head"><strong>${esc(t.title)}</strong><span>${esc(t.artist)}</span></div>` +
     items.map(([ic, label], i) => `<button type="button" role="menuitem" class="ctx-item" data-i="${i}">${icon(ic)}<span>${esc(label)}</span></button>`).join('');
   document.body.append(backdrop, menu); menuOrigin = origin; openedAt = Date.now();
+  layerOpen('menu', () => closeMenu(false));
   if (!sheet) {
     const w = menu.offsetWidth, h = menu.offsetHeight;
     const left = Math.max(8, Math.min(x, innerWidth - w - 8)), top = Math.max(8, Math.min(y, innerHeight - h - 8));
@@ -337,14 +339,266 @@ document.addEventListener('pointermove', (e) => { if (lp && Math.hypot(e.clientX
 ['pointerup', 'pointercancel', 'dragstart'].forEach((t) => document.addEventListener(t, lpCancel, { passive: true }));
 document.addEventListener('click', (e) => { if (Date.now() < suppressClickUntil) { e.preventDefault(); e.stopPropagation(); } }, true);
 
+
+/* =====================================================================
+ * 3.27 — BACK NAVIGATION (phone), LOCK-SCREEN PLAYER, NOTIFICATIONS
+ * ===================================================================== */
+const App = () => window.SonoraApp;
+const lsGet = (k, f) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? f; } catch { return f; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage full / private mode */ } };
+
+/* ---------- history layers: system Back / swipe-back closes player, dialogs, menus first ---------- */
+const layers = [];
+let cleaning = false;
+function layerOpen(name, close) {
+  if (layers.some((l) => l.name === name)) return;
+  try { history.pushState({ sonoraLayer: name }, '', location.href); } catch { return; }
+  layers.push({ name, close });
+}
+function layerClosed(name) {
+  const i = layers.findIndex((l) => l.name === name); if (i < 0) return; // already closed by Back
+  layers.splice(i, 1);
+  setTimeout(() => { // drop the history entry we added, unless something else took over meanwhile
+    if (history.state?.sonoraLayer === name && !layers.some((l) => l.name === name)) { cleaning = true; history.back(); setTimeout(() => { cleaning = false; }, 600); }
+  }, 0);
+}
+function closeAllLayers() { while (layers.length) { const l = layers.pop(); try { l.close(); } catch { /* ignore */ } } }
+window.addEventListener('popstate', (e) => {
+  if (cleaning) { cleaning = false; return; }
+  if (layers.length) { const l = layers.pop(); try { l.close(); } catch { /* ignore */ } return; }
+  if (e.state?.sonoraLayer) history.back(); // landed on a stale overlay entry: skip it
+});
+(() => {
+  const player = $('nowPlayingExpanded');
+  if (player) new MutationObserver(() => {
+    const open = !player.classList.contains('hidden');
+    if (open) layerOpen('player', () => $('closeNowPlaying')?.click()); else layerClosed('player');
+  }).observe(player, { attributes: true, attributeFilter: ['class'] });
+  const dlg = $('dlg');
+  if (dlg) new MutationObserver(() => { if (dlg.open) layerOpen('dialog', () => dlg.close()); else layerClosed('dialog'); }).observe(dlg, { attributes: true, attributeFilter: ['open'] });
+})();
+
+/* ---------- back button + scroll restore ---------- */
+const ROOT_ROUTES = new Set(['', 'home', 'search', 'liked', 'playlists', 'albums']);
+const PARENT = { album: '#/albums', playlist: '#/playlists', artist: '#/home' };
+const routeName = () => String(location.hash || '').replace(/^#\/?/, '').split('/')[0].toLowerCase();
+const hashOf = (u) => { try { return new URL(u).hash || '#/home'; } catch { return '#/home'; } };
+const navStack = [location.hash || '#/home'];
+const scrollMap = {};
+function updateBackBtn() { const b = $('backBtn'); if (b) b.classList.toggle('hidden', ROOT_ROUTES.has(routeName())); }
+let curHash = location.hash || '#/home';
+window.addEventListener('scroll', () => { scrollMap[curHash] = window.scrollY; }, { passive: true }); // the app resets scroll before our hashchange runs, so remember it as the user scrolls
+window.addEventListener('hashchange', (e) => {
+  const to = hashOf(e.newURL); curHash = to;
+  const isBack = navStack.length > 1 && navStack[navStack.length - 2] === to;
+  if (isBack) { navStack.pop(); const y = scrollMap[to]; if (y > 0) requestAnimationFrame(() => window.scrollTo(0, y)); }
+  else navStack.push(to);
+  if (navStack.length > 80) navStack.splice(0, 40);
+  closeAllLayers(); updateBackBtn();
+});
+$('backBtn')?.addEventListener('click', () => {
+  if (layers.length) { history.back(); return; }
+  if (navStack.length > 1) history.back(); else location.hash = PARENT[routeName()] || '#/home';
+});
+updateBackBtn();
+
+/* ---------- lock-screen / notification-shade player (Spotify / JioSaavn / Wynk style) ---------- */
+const artCache = new Map();
+function artworkFor(t) {
+  if (!t) return [];
+  if (t.coverUrl) return [96, 128, 192, 256, 384, 512].map((s) => ({ src: t.coverUrl, sizes: `${s}x${s}` }));
+  if (artCache.has(t.id)) return artCache.get(t.id);
+  let out = [];
+  try {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 512; const c = cv.getContext('2d');
+    const st = $('npCover')?.style;
+    const h1 = parseFloat(st?.getPropertyValue('--h1')), h2 = parseFloat(st?.getPropertyValue('--h2'));
+    const a = Number.isFinite(h1) ? h1 : 270, b = Number.isFinite(h2) ? h2 : (a + 60) % 360;
+    const g = c.createLinearGradient(0, 0, 512, 512); g.addColorStop(0, `hsl(${a} 72% 52%)`); g.addColorStop(1, `hsl(${b} 78% 36%)`);
+    c.fillStyle = g; c.fillRect(0, 0, 512, 512);
+    c.strokeStyle = 'rgba(255,255,255,.22)'; c.lineWidth = 6; c.beginPath(); c.arc(256, 256, 190, 0, Math.PI * 2); c.stroke();
+    c.strokeStyle = 'rgba(255,255,255,.12)'; c.lineWidth = 3; c.beginPath(); c.arc(256, 256, 232, 0, Math.PI * 2); c.stroke();
+    c.fillStyle = '#fff'; c.font = '800 250px system-ui,-apple-system,Segoe UI,Roboto,sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText((String(t.title || 'S').trim()[0] || 'S').toUpperCase(), 256, 270);
+    out = [{ src: cv.toDataURL('image/png'), sizes: '512x512', type: 'image/png' }];
+  } catch { out = []; }
+  artCache.set(t.id, out); if (artCache.size > 40) artCache.delete(artCache.keys().next().value);
+  return out;
+}
+(() => {
+  const audio = $('audio'); if (!audio || !('mediaSession' in navigator)) return;
+  const push = () => {
+    const ms = navigator.mediaSession; if (!ms.setPositionState) return;
+    const d = audio.duration; if (!Number.isFinite(d) || d <= 0) return;
+    try { ms.setPositionState({ duration: d, playbackRate: audio.playbackRate || 1, position: Math.min(Math.max(audio.currentTime || 0, 0), d) }); } catch { /* unsupported combination */ }
+  };
+  ['loadedmetadata', 'durationchange', 'play', 'pause', 'seeked', 'ratechange'].forEach((ev) => audio.addEventListener(ev, push));
+  let last = 0; audio.addEventListener('timeupdate', () => { const n = Date.now(); if (n - last > 5000) { last = n; push(); } });
+})();
+
+/* ---------- browser / status-bar colour follows the theme ---------- */
+function syncThemeColor() {
+  const meta = document.querySelector('meta[name="theme-color"]'); if (!meta) return;
+  meta.setAttribute('content', root.dataset.theme === 'light' ? '#efeafb' : '#0b0914');
+}
+new MutationObserver(syncThemeColor).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+syncThemeColor();
+
+/* ---------- notifications: bell + centre, phone notifications, new-release alerts ---------- */
+const NK = 'sonora-notifs', PK = 'sonora-notif-prefs', BK = 'sonora-notif-seen';
+let notifs = lsGet(NK, []); if (!Array.isArray(notifs)) notifs = [];
+let prefs = { release: true, sleep: true, quiet: false, ...lsGet(PK, {}) };
+const supportsNotif = () => 'Notification' in window;
+const perm = () => (supportsNotif() ? Notification.permission : 'unsupported');
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const quietNow = () => { if (!prefs.quiet) return false; const h = new Date().getHours(); return h >= 22 || h < 8; };
+const prefOn = (k) => (k === 'quiet' ? !!prefs.quiet : prefs[k] !== false);
+const unread = () => notifs.filter((n) => !n.read).length;
+function ago(ts) {
+  const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return 'Just now'; if (s < 3600) return `${Math.floor(s / 60)} min ago`; if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+function updateBadge() {
+  const n = unread(), el = $('bellBadge');
+  if (el) { el.textContent = n > 9 ? '9+' : String(n); el.classList.toggle('hidden', n === 0); }
+  const bell = $('bellBtn'); if (bell) bell.setAttribute('aria-label', n ? `Notifications, ${n} unread` : 'Notifications');
+  try { if (n) navigator.setAppBadge?.(n); else navigator.clearAppBadge?.(); } catch { /* badge unsupported */ }
+}
+async function showSystem(n) {
+  if (perm() !== 'granted') return false;
+  const opts = { body: n.body, icon: 'public/icons/icon-192.png', badge: 'public/icons/icon-192.png', tag: `sonora-${n.type}`, renotify: true, data: { url: n.url || '#/home' } };
+  if (n.image && /^https:/.test(n.image)) opts.image = n.image;
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg?.showNotification) { await reg.showNotification(n.title, opts); return true; }
+    new Notification(n.title, opts); return true;
+  } catch { return false; }
+}
+function addNotification(n) {
+  const item = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, ts: Date.now(), read: false, ...n };
+  notifs.unshift(item); notifs = notifs.slice(0, 50); lsSet(NK, notifs); updateBadge();
+  if (panel) renderPanel();
+  return item;
+}
+function notifyEvent(type, title, body, opts = {}) {
+  if (prefs[type] === false) return;
+  const item = addNotification({ type, title, body, url: opts.url || '#/home', image: opts.image || '' });
+  if (document.hidden) { if (!quietNow()) showSystem(item); }
+  else if (opts.toast !== false) App()?.notify(`${title}: ${body}`);
+}
+async function enableNotifications() {
+  if (!supportsNotif()) { App()?.notify('This browser does not support notifications.'); return; }
+  if (isIOS() && !isStandalone()) { App()?.notify('On iPhone: tap Share › Add to Home Screen, open SONORA from there, then turn notifications on.'); return; }
+  let res = perm();
+  if (res === 'default') { try { res = await Notification.requestPermission(); } catch { res = perm(); } }
+  if (res === 'granted') {
+    const t = addNotification({ type: 'system', title: 'Notifications are on', body: 'You will get new releases and sleep-timer alerts here and on your phone.', url: '#/home', read: true });
+    updateBadge(); showSystem(t);
+  } else if (res === 'denied') App()?.notify('Notifications are blocked. Allow them for SONORA in your browser or phone settings.');
+  refreshNotifUI();
+}
+
+/* bell panel (popover on desktop, bottom sheet on phones) */
+let panel = null, panelBackdrop = null;
+function renderPanel() {
+  if (!panel) return;
+  const ask = supportsNotif() && perm() === 'default';
+  panel.innerHTML = `<header class="np-head"><h2>Notifications</h2><div class="np-actions">${unread() ? '<button class="link" type="button" data-n="readall">Mark all read</button>' : ''}<button class="icon-btn" type="button" data-n="close" aria-label="Close notifications"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div></header>
+  ${ask ? '<div class="np-ask"><div><strong>Get alerts on your phone</strong><span>New releases and sleep-timer alerts, even when SONORA is in the background.</span></div><button class="btn btn-primary" type="button" data-n="enable">Turn on</button></div>' : ''}
+  ${notifs.length ? `<ul class="np-list">${notifs.map((n) => `<li><button type="button" class="np-item${n.read ? '' : ' unread'}" data-n="open" data-id="${n.id}"><span class="np-dot" aria-hidden="true"></span><span class="np-txt"><strong>${esc(n.title)}</strong><span>${esc(n.body)}</span></span><time>${ago(n.ts)}</time></button></li>`).join('')}</ul>` : '<div class="np-empty"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg><strong>You’re all caught up</strong><span>New releases and alerts will show up here.</span></div>'}
+  <footer class="np-foot">${notifs.length ? '<button class="link" type="button" data-n="clear">Clear all</button>' : '<span></span>'}<a class="link" href="#/settings" data-n="settings">Notification settings</a></footer>`;
+}
+function openPanel() {
+  if (panel) { closePanel(); return; }
+  const sheet = matchMedia('(max-width:700px)').matches;
+  panelBackdrop = document.createElement('div'); panelBackdrop.className = 'ctx-backdrop' + (sheet ? ' sheet' : '');
+  panel = document.createElement('section'); panel.className = 'notif-panel glass' + (sheet ? ' sheet' : ''); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Notifications');
+  document.body.append(panelBackdrop, panel); renderPanel();
+  if (!sheet) { const r = $('bellBtn').getBoundingClientRect(); panel.style.top = `${Math.round(r.bottom + 10)}px`; panel.style.right = `${Math.max(12, Math.round(innerWidth - r.right - 8))}px`; }
+  panel.querySelector('button, a')?.focus({ preventScroll: true });
+  panelBackdrop.addEventListener('pointerdown', (e) => { e.preventDefault(); closePanel(); });
+  $('bellBtn').setAttribute('aria-expanded', 'true');
+  layerOpen('notifs', () => closePanel(true));
+}
+function closePanel(fromBack = false) {
+  if (!panel) return;
+  const p = panel, b = panelBackdrop; panel = panelBackdrop = null;
+  $('bellBtn')?.setAttribute('aria-expanded', 'false');
+  const done = () => { p.remove(); b?.remove(); };
+  if (canAnimate()) { p.classList.add('closing'); b?.classList.add('closing'); setTimeout(done, 160); } else done();
+  if (!fromBack) { layerClosed('notifs'); $('bellBtn')?.focus({ preventScroll: true }); }
+}
+function gotoFromPanel(url) { // navigate first, let the route change clear the history layer (avoids a back/forward race)
+  closePanel(true);
+  if (location.hash === url) layerClosed('notifs'); else location.hash = url;
+}
+$('bellBtn')?.addEventListener('click', openPanel);
+document.addEventListener('keydown', (e) => { if (panel && e.key === 'Escape') { e.preventDefault(); closePanel(); } });
+window.addEventListener('hashchange', () => closePanel(true));
+
+/* settings card + panel actions (delegated; the settings page re-renders often) */
+function notifSettingsHTML() {
+  const p = perm(); const ios = isIOS() && !isStandalone();
+  const status = !supportsNotif() ? 'This browser can’t show phone notifications. The bell inside SONORA still works.'
+    : ios ? 'On iPhone, add SONORA to your Home Screen first (Share › Add to Home Screen), then turn notifications on from there.'
+    : p === 'granted' ? 'Phone notifications are on.' : p === 'denied' ? 'Notifications are blocked. Allow them for SONORA in your browser or phone settings.' : 'Phone notifications are off.';
+  const chip = (k, label) => `<button class="chip pref-chip" type="button" data-n="pref" data-k="${k}" aria-pressed="${prefOn(k)}">${label}</button>`;
+  return `<div class="settings-subhead notif-subhead"><div><h3>Notifications</h3><p>The lock-screen player (artwork, play, previous, next, seek bar) is always on while music plays. Alerts appear in the bell and, if allowed, as phone notifications.</p></div></div>
+  <div class="notif-status" data-state="${p}"><span>${status}</span><div class="notif-btns">${supportsNotif() && p !== 'granted' && p !== 'denied' ? '<button class="btn btn-primary" type="button" data-n="enable">Turn on notifications</button>' : ''}${p === 'granted' ? '<button class="btn btn-glass" type="button" data-n="test">Send a test</button>' : ''}</div></div>
+  <div class="motion-options notif-prefs" role="group" aria-label="Alert types">${chip('release', 'New releases')}${chip('sleep', 'Sleep timer')}${chip('quiet', 'Quiet hours 10pm–8am')}</div>`;
+}
+function refreshNotifUI() { const el = $('notifSettings'); if (el) el.innerHTML = notifSettingsHTML(); renderPanel(); }
+new MutationObserver(() => { const el = $('notifSettings'); if (el && !el.firstChild) el.innerHTML = notifSettingsHTML(); }).observe($('view') || document.body, { childList: true, subtree: true });
+document.addEventListener('click', (e) => {
+  const b = e.target.closest?.('[data-n]'); if (!b) return;
+  const act = b.dataset.n;
+  if (act === 'enable') { e.preventDefault(); enableNotifications(); }
+  else if (act === 'test') { e.preventDefault(); const t = addNotification({ type: 'system', title: 'Test notification', body: 'This is how SONORA alerts will look on your phone.', url: '#/home' }); showSystem(t); }
+  else if (act === 'pref') { const k = b.dataset.k; prefs[k] = !prefOn(k); lsSet(PK, prefs); b.setAttribute('aria-pressed', String(prefOn(k))); }
+  else if (act === 'readall') { notifs.forEach((n) => { n.read = true; }); lsSet(NK, notifs); updateBadge(); renderPanel(); }
+  else if (act === 'clear') { notifs = []; lsSet(NK, notifs); updateBadge(); renderPanel(); }
+  else if (act === 'close') closePanel();
+  else if (act === 'settings') { e.preventDefault(); gotoFromPanel('#/settings'); }
+  else if (act === 'open') {
+    const n = notifs.find((x) => x.id === b.dataset.id); if (!n) return;
+    n.read = true; lsSet(NK, notifs); updateBadge(); gotoFromPanel(n.url || '#/home');
+  }
+});
+navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.type === 'sonora-open') location.hash = String(e.data.url || '#/home').replace(/^.*#/, '#'); });
+
+/* new-release alerts: checked while the app is open or playing in the background */
+let lastCheck = 0;
+async function checkReleases() {
+  const app = App(); if (!app?.cloud?.() || !app.fetchLatest) return;
+  lastCheck = Date.now();
+  let rows = []; try { rows = await app.fetchLatest(); } catch { return; }
+  if (!rows.length) return;
+  const newest = rows[0].created_at; const base = localStorage.getItem(BK);
+  if (!base) { localStorage.setItem(BK, newest); return; } // first run: remember what already exists, do not spam
+  const fresh = rows.filter((r) => String(r.created_at) > base);
+  if (!fresh.length) return;
+  localStorage.setItem(BK, newest);
+  const one = fresh.length === 1;
+  notifyEvent('release', one ? 'New on SONORA' : `${fresh.length} new tracks on SONORA`,
+    one ? `${fresh[0].title} — ${fresh[0].artist}` : `${fresh.slice(0, 3).map((r) => r.title).join(', ')}${fresh.length > 3 ? '…' : ''}`,
+    { url: '#/home', image: fresh[0].cover_url || '' });
+  app.refreshCatalogue?.();
+}
+setTimeout(checkReleases, 5000);
+setInterval(() => { if (Date.now() - lastCheck > 7 * 60 * 1000) checkReleases(); }, 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastCheck > 2 * 60 * 1000) checkReleases(); });
+updateBadge();
+
 /* ---------------- phone: shorter search placeholder so it is not cut off ---------------- */
 (() => {
   const input = $('topSearch'); if (!input) return;
   const full = input.getAttribute('placeholder') || 'Search tracks, artists, genres';
-  const mq = matchMedia('(max-width:520px)');
-  const apply = () => input.setAttribute('placeholder', mq.matches ? 'Search songs' : full);
-  apply(); mq.addEventListener?.('change', apply);
+  const mq = matchMedia('(max-width:520px)'), tiny = matchMedia('(max-width:430px)');
+  const apply = () => input.setAttribute('placeholder', tiny.matches ? 'Search' : mq.matches ? 'Search songs' : full);
+  apply(); mq.addEventListener?.('change', apply); tiny.addEventListener?.('change', apply);
 })();
 
-window.SonoraUX = { routeEnter, openPlayer, closePlayer, trackChanged, pop, closeMenu };
+window.SonoraUX = { routeEnter, openPlayer, closePlayer, trackChanged, pop, closeMenu, artworkFor, notifyEvent, checkReleases };
 })();

@@ -21,7 +21,7 @@
 /* Apply the saved or system theme before first paint to avoid a flash. */
 (function(){try{var m=localStorage.getItem('sonora-theme-mode')||'system';var t=m==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):m;var a=localStorage.getItem('sonora-theme-accent')||'violet';document.documentElement.dataset.theme=t;document.documentElement.dataset.accent=a;document.querySelector('meta[name=theme-color]').content=t==='light'?'#efeafb':'#0b0914'}catch(e){}})();
 </script>
-<link rel="stylesheet" href="styles.css?v=3.26.0">
+<link rel="stylesheet" href="styles.css?v=3.27.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -42,6 +42,8 @@
 <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.5v5h4l5 4v-13l-5 4z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a8 8 0 0 1 0 11"/></symbol>
 <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5v5h4l5 4v-13l-5 4z"/><path d="M17 9.5l4 5M21 9.5l-4 5"/></symbol>
 <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 0 1 12 0v5l1.6 2H4.4zM10 20.5a2 2 0 0 0 4 0"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
 <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
 <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
 <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
@@ -96,9 +98,11 @@
   </aside>
   <main id="main">
     <header class="top glass">
+      <button class="icon-btn top-back hidden" id="backBtn" type="button" aria-label="Go back"><svg class="ic"><use href="#i-back"/></svg></button>
       <label class="search"><svg class="ic"><use href="#i-search"/></svg><span class="sr">Search music</span><input id="topSearch" type="search" placeholder="Search tracks, artists, genres" autocomplete="off"></label>
       <span class="grow"></span>
       <button class="icon-btn hidden" id="installBtn" type="button" aria-label="Install SONORA app" title="Install SONORA"><svg class="ic"><use href="#i-download"/></svg></button>
+      <button class="icon-btn bell-btn" id="bellBtn" type="button" aria-label="Notifications" aria-haspopup="dialog"><svg class="ic"><use href="#i-bell"/></svg><span class="bell-badge hidden" id="bellBadge" aria-hidden="true"></span></button>
       <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch to light mode"><svg class="ic"><use href="#i-sun"/></svg></button>
       <button class="acct" id="acctBtn" type="button">Sign in</button>
     </header>
@@ -174,8 +178,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
-<script src="config.js?v=3.26.0"></script>
-<script src="app.js?v=3.26.0" defer></script>
-<script src="sonora-ux.js?v=3.26.0" defer></script>
+<script src="config.js?v=3.27.0"></script>
+<script src="app.js?v=3.27.0" defer></script>
+<script src="sonora-ux.js?v=3.27.0" defer></script>
 </body>
 </html>

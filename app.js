@@ -1436,6 +1436,7 @@ const views = {
           <button class="theme-palette-option ${themeAccent==='emerald'?'selected':''}" type="button" data-act="theme-accent" data-value="emerald" aria-pressed="${themeAccent==='emerald'}"><span class="palette-swatch emerald-swatch"><i></i><i></i></span><strong>Emerald</strong><small>Green & mint</small></button>
           <button class="theme-palette-option ${themeAccent==='rose'?'selected':''}" type="button" data-act="theme-accent" data-value="rose" aria-pressed="${themeAccent==='rose'}"><span class="palette-swatch rose-swatch"><i></i><i></i></span><strong>Rose</strong><small>Pink & coral</small></button>
         </div>
+        <div id="notifSettings"></div>
         <div class="settings-subhead motion-subhead"><div><h3>Motion</h3><p>Animations, page transitions and the colour-reactive player. Auto follows your device’s reduce-motion setting.</p></div></div>
         <div class="motion-options" role="group" aria-label="Motion">
           ${[['auto','Auto'],['full','Full'],['reduced','Reduced'],['off','Off']].map(([v,l]) => `<button class="chip pref-chip" type="button" data-act="motion-mode" data-value="${v}" aria-pressed="${motionMode===v}">${l}</button>`).join('')}
@@ -1586,7 +1587,7 @@ function setActive(t) {
   updateCoverElement($('npCover'),t);
   $('dur').textContent = fmt(t.duration); $('cur').textContent = '0:00'; setSeek(0);
   store.set('sonora-last', t.id); syncLike();syncExpandedPlayer();renderExpandedQueue();window.SonoraUX?.trackChanged(t);
-  if ('mediaSession' in navigator && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title:t.title, artist:t.artist, album:t.album, artwork:t.coverUrl?[{src:t.coverUrl,sizes:'512x512',type:'image/jpeg'}]:[] });
+  if ('mediaSession' in navigator && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title:t.title, artist:t.artist, album:t.album||'SONORA', artwork:(window.SonoraUX?.artworkFor?.(t)) || (t.coverUrl?[{src:t.coverUrl,sizes:'512x512'}]:[]) });
 }
 function load(t, autoplay) {
   setActive(t);
@@ -1711,7 +1712,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && li
 window.addEventListener('online', () => { if (sb && !livePresenceReady && livePresenceChannel) scheduleLivePresenceReconnect(livePresenceChannel, livePresenceEpoch); });
 audio.addEventListener('waiting', () => $('play').classList.add('loading'));
 ['playing', 'canplay', 'pause', 'error'].forEach((e) => audio.addEventListener(e, () => $('play').classList.remove('loading')));
-audio.addEventListener('ended', () => { if (sleepAtEnd) { sleepAtEnd = false; $('sleepTimer').value = '0'; notify('Sleep timer: playback stopped.'); return; } if (repeatMode === 'all' || userPreferences.autoplay_next !== false) step(1, true); });
+audio.addEventListener('ended', () => { if (sleepAtEnd) { sleepAtEnd = false; $('sleepTimer').value = '0'; { notify('Sleep timer: playback stopped.'); window.SonoraUX?.notifyEvent?.('sleep','Sleep timer','Playback stopped. Sleep well.',{toast:false}); } return; } if (repeatMode === 'all' || userPreferences.autoplay_next !== false) step(1, true); });
 audio.addEventListener('error', () => { if (audio.src && active) notify('This track could not be streamed. Check that your Worker is deployed and the file exists in R2.'); });
 $('seek').addEventListener('input', (e) => { const p = e.target.value / 1000; e.target.style.setProperty('--p', `${p * 100}%`); if (audio.duration) audio.currentTime = audio.duration * p; });
 $('expandedSeek').addEventListener('input', (e) => { const p=e.target.value/1000;e.target.style.setProperty('--p',`${p*100}%`);if(audio.duration)audio.currentTime=audio.duration*p;$('expandedCur').textContent=fmt(audio.currentTime); });
@@ -1737,7 +1738,7 @@ $('expandedArtist').addEventListener('click', () => { if (!active?.artist) retur
 $('sleepTimer').addEventListener('change', (e) => {
   clearTimeout(sleepTimeout); sleepTimeout = null; sleepAtEnd = false; const v = e.target.value;
   if (v === 'end') { sleepAtEnd = true; notify('Playback will stop after this track.'); }
-  else if (Number(v) > 0) { sleepTimeout = setTimeout(() => { audio.pause(); $('sleepTimer').value = '0'; notify('Sleep timer: playback stopped.'); }, Number(v) * 60000); notify(`Sleep timer set for ${v} minutes.`); }
+  else if (Number(v) > 0) { sleepTimeout = setTimeout(() => { audio.pause(); $('sleepTimer').value = '0'; { notify('Sleep timer: playback stopped.'); window.SonoraUX?.notifyEvent?.('sleep','Sleep timer','Playback stopped. Sleep well.',{toast:false}); } }, Number(v) * 60000); notify(`Sleep timer set for ${v} minutes.`); }
 });
 $('playbackSpeed').addEventListener('change',e=>{const speed=Math.max(.5,Math.min(2,Number(e.target.value)||1));audio.playbackRate=speed;store.set('sonora-playback-speed',speed);});
 const initialSpeed=Math.max(.5,Math.min(2,Number(store.get('sonora-playback-speed',1))||1));audio.playbackRate=initialSpeed;$('playbackSpeed').value=String(initialSpeed);
@@ -1761,8 +1762,10 @@ if ('mediaSession' in navigator) {
   registerMediaAction('previoustrack', () => step(-1));
   registerMediaAction('nexttrack', () => step(1));
   registerMediaAction('seekto', (d) => { if(Number.isFinite(d.seekTime))audio.currentTime=d.seekTime; });
-  registerMediaAction('seekbackward', (d) => { audio.currentTime=Math.max(0,audio.currentTime-(d.seekOffset||10)); });
-  registerMediaAction('seekforward', (d) => { audio.currentTime=Math.min(audio.duration||Infinity,audio.currentTime+(d.seekOffset||10)); });
+  if (!matchMedia('(pointer:coarse)').matches) { // phones keep prev/next in the notification like Spotify / JioSaavn; the seek bar still works via seekto
+    registerMediaAction('seekbackward', (d) => { audio.currentTime=Math.max(0,audio.currentTime-(d.seekOffset||10)); });
+    registerMediaAction('seekforward', (d) => { audio.currentTime=Math.min(audio.duration||Infinity,audio.currentTime+(d.seekOffset||10)); });
+  }
   registerMediaAction('stop', () => { audio.pause(); audio.currentTime=0; syncExpandedPlayer(); });
 }
 syncPlayerControls();syncExpandedPlayer();
@@ -2351,7 +2354,16 @@ async function init() {
   await loadCatalogue();
   if (!user) await loadLibrary();
 }
+async function fetchLatestTracks() {
+  if (!sb) return [];
+  const { data, error } = await sb.from('tracks').select('id,title,artist,album,cover_url,created_at').eq('status', 'published').order('created_at', { ascending:false }).limit(8);
+  return error ? [] : (data || []);
+}
 window.SonoraApp = {
+  fetchLatest: fetchLatestTracks,
+  refreshCatalogue: () => loadCatalogue({ renderAfter:true }),
+  cloud: () => Boolean(sb),
+  playTrack: (id) => { if (byId(id)) play(id); },
   trackById: (id) => byId(id),
   isLiked: (id) => liked.has(id),
   toggleLike: (id) => toggleLike(id),
