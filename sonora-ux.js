@@ -337,5 +337,14 @@ document.addEventListener('pointermove', (e) => { if (lp && Math.hypot(e.clientX
 ['pointerup', 'pointercancel', 'dragstart'].forEach((t) => document.addEventListener(t, lpCancel, { passive: true }));
 document.addEventListener('click', (e) => { if (Date.now() < suppressClickUntil) { e.preventDefault(); e.stopPropagation(); } }, true);
 
+/* ---------------- phone: shorter search placeholder so it is not cut off ---------------- */
+(() => {
+  const input = $('topSearch'); if (!input) return;
+  const full = input.getAttribute('placeholder') || 'Search tracks, artists, genres';
+  const mq = matchMedia('(max-width:520px)');
+  const apply = () => input.setAttribute('placeholder', mq.matches ? 'Search songs' : full);
+  apply(); mq.addEventListener?.('change', apply);
+})();
+
 window.SonoraUX = { routeEnter, openPlayer, closePlayer, trackChanged, pop, closeMenu };
 })();

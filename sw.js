@@ -1,6 +1,6 @@
 /* SONORA shell cache. Versioned assets prevent a previous deployment from masking updated frontend code. */
-const CACHE = 'sonora-shell-v3-25-0';
-const SHELL = ['./', './index.html', './styles.css?v=3.25.0', './app.js?v=3.25.0', './sonora-ux.js?v=3.25.0', './config.js?v=3.25.0', './manifest.webmanifest', './public/sonora-mark.svg'];
+const CACHE = 'sonora-shell-v3-26-0';
+const SHELL = ['./', './index.html', './styles.css?v=3.26.0', './app.js?v=3.26.0', './sonora-ux.js?v=3.26.0', './config.js?v=3.26.0', './manifest.webmanifest', './public/sonora-mark.svg'];
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
 });

@@ -42,3 +42,19 @@ New feature: track menu — right-click (desktop), long-press (phone/tablet), or
 Motion preference is stored on the device only (localStorage 'sonora-motion'); it is not synced to the account.
 Tested (headless Chromium, mocked backend): dark + light, 1280 and 390 px; right-click menu + actions, long-press sheet, player open/close, ambient colours, like burst, skeleton, Motion setting (Off), OS reduce-motion -> Reduced. No JS errors.
 Not done (deliberately, per plan): swipe gestures, crossfade, lyrics, offline downloads.
+
+
+=== 3.26 PHONE FIXES (iPhone + Android) ===
+Tested at 320x568, 360x740, 375x667, 390x844, 412x915, 430x932 portrait and 667x375, 844x390, 915x412 landscape (headless Chromium, mocked backend).
+Causes of "cut off" parts and fixes:
+ 1. Installed iPhone app (translucent status bar): top bar / content sat under the clock + notch. Now padded with env(safe-area-inset-*) on top, left, right
+    (landscape notch) and a status-bar scrim; player/tab bar also respect left/right insets.
+ 2. iOS zoomed the page when tapping search, login fields or the Sleep/Speed menus (fields were 12-15px). All fields are now 16px on phones/touch.
+ 3. Full player was taller than short screens (up to 95px cut off at 320x568): art/title/gaps now scale to the screen height, long titles clamp to 2 lines. Fits with no scrolling on all tested sizes.
+ 4. Landscape: player + tab bar left ~115px for content and the full player was cut. Now the tab bar becomes a slim left rail, the mini player is compact,
+    and the full player is two columns. Wide phones in landscape (915px) get a scrollable compact sidebar.
+ 5. Login: Sign in + Continue as guest are visible without scrolling on short phones (hero paragraph hidden, two columns in landscape).
+ 6. Search placeholder was truncated ("Search tracks, artis") -> "Search songs" on narrow screens.
+ 7. Mini player / row buttons got larger invisible touch areas; 100dvh used instead of 100vh (iOS toolbar); dialog max-height respects insets; text-size-adjust fixed for iOS landscape.
+Not tested on real devices: notch/home-bar spacing was verified by CSS + simulated insets, not on a physical iPhone.
+Version 3.26.0 (cache name + ?v= strings bumped so phones pick up new files).
