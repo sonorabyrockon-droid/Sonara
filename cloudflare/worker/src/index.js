@@ -14,6 +14,7 @@
  *   POST     /admin/upload?title=...&artist=...&album=...&genre=...&filename=...
  *   PATCH    /admin/tracks/<uuid>
  *   DELETE   /admin/tracks/<uuid>
+ *   POST     /admin/cleanup  { dry_run: true|false }  (removes R2 files that no catalogue track uses; also runs daily via cron)
  *
  * Required bindings / vars:
  *   AUDIO (R2 bucket binding)
@@ -21,7 +22,7 @@
  * Required Worker secret:
  *   SUPABASE_SECRET_KEY (sb_secret_...; never put in GitHub or the browser)
  */
-const VERSION = '3.28.0';
+const VERSION = '3.29.0';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_TRACKS_RETURNED = 250;
 // No upload limit by default (admin only). A cap is applied ONLY if an optional UPLOADS_PER_HOUR Worker variable
@@ -153,6 +154,51 @@ async function supabaseRest(env, path, options = {}) {
   headers.set('apikey', env.SUPABASE_SECRET_KEY);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   return fetch(url, { ...options, headers, signal: options.signal || AbortSignal.timeout(15000) });
+}
+
+/* ---------- storage clean-up: R2 keeps only files a catalogue track uses ---------- */
+const ORPHAN_GRACE_MS = 2 * 60 * 60 * 1000;   // never touch files newer than 2 h (uploads in progress)
+const keyFromStreamUrl = (value) => {
+  try { const path = new URL(String(value || '')).pathname, i = path.indexOf('/stream/'); return i < 0 ? '' : decodeURIComponent(path.slice(i + 8)); } catch { return ''; }
+};
+async function cleanupStorage(env, { dryRun = true, force = false } = {}) {
+  if (!env.AUDIO) throw new Error('R2 bucket binding AUDIO is missing.');
+  // 1. every key the catalogue still uses (any status: draft tracks can be republished)
+  const used = new Set(); let read = 0, total = null;
+  for (let page = 0; page < 200; page++) {
+    const response = await supabaseRest(env, 'tracks?select=audio_key,cover_url&order=created_at.asc', { headers: { Prefer: 'count=exact', 'Range-Unit': 'items', Range: `${read}-${read + 999}` } });
+    if (!response.ok) throw new Error(`Catalogue check failed, nothing was deleted: ${(await response.text()).slice(0, 160)}`);
+    const rows = await response.json();
+    const t = Number((response.headers.get('Content-Range') || '').split('/').pop()); if (Number.isFinite(t)) total = t;
+    for (const row of rows) { if (row.audio_key) used.add(row.audio_key); const c = keyFromStreamUrl(row.cover_url); if (c) used.add(c); }
+    read += rows.length;
+    if (!rows.length || (total !== null && read >= total)) break;
+  }
+  if (total !== null && read < total) throw new Error('Catalogue was only partly read, so nothing was deleted.');
+  if (!read) throw new Error('The catalogue is empty or unreadable, so nothing was deleted.');
+  // 2. everything stored in R2
+  let scanned = 0, kept = 0, tooNew = 0, bytes = 0, audioStored = 0; const orphans = [];
+  let cursor;
+  for (let page = 0; page < 100; page++) {
+    const listing = await env.AUDIO.list({ limit: 1000, cursor });
+    for (const object of listing.objects || []) {
+      scanned++;
+      const isAudio = object.key.startsWith('tracks/'), isCover = object.key.startsWith('covers/');
+      if (isAudio) audioStored++;
+      if (!isAudio && !isCover) { kept++; continue; }                       // unknown prefixes are never touched
+      if (used.has(object.key)) { kept++; continue; }
+      if (Date.now() - new Date(object.uploaded).getTime() < ORPHAN_GRACE_MS) { tooNew++; continue; }
+      orphans.push({ key: object.key, size: Number(object.size) || 0, audio: isAudio }); bytes += Number(object.size) || 0;
+    }
+    if (!listing.truncated) break; cursor = listing.cursor;
+  }
+  const orphanAudio = orphans.filter((o) => o.audio).length, orphanCovers = orphans.length - orphanAudio;
+  // 3. safety brake: if most stored songs look unused something is wrong with the catalogue read, not with R2
+  if (!force && orphanAudio > 10 && orphanAudio > audioStored * 0.5) throw new Error(`Safety stop: ${orphanAudio} of ${audioStored} songs look unused. Nothing was deleted.`);
+  let deleted = 0;
+  if (!dryRun) for (let i = 0; i < orphans.length; i += 500) { const batch = orphans.slice(i, i + 500).map((o) => o.key); await env.AUDIO.delete(batch); deleted += batch.length; }
+  return { dry_run: dryRun, catalogue_tracks: read, files_in_r2: scanned, files_in_use: kept, skipped_recent: tooNew, unused_songs: orphanAudio, unused_covers: orphanCovers,
+    unused_bytes: bytes, deleted, examples: orphans.slice(0, 8).map((o) => o.key) };
 }
 async function readJson(response) {
   const raw = await response.text();
@@ -380,6 +426,14 @@ async function adminRoute(request, env, url) {
   if (url.pathname === '/admin/overview' && request.method === 'GET') {
     return json(await getAdminOverview(env, user));
   }
+  if (url.pathname === '/admin/cleanup' && request.method === 'POST') {
+    let body = {}; try { body = await request.json(); } catch { /* default: preview only */ }
+    try {
+      const result = await cleanupStorage(env, { dryRun: body.dry_run !== false });
+      if (!result.dry_run) await writeAudit(env, user, 'storage.cleanup', { deleted: result.deleted, unused_bytes: result.unused_bytes });
+      return json({ ok: true, ...result });
+    } catch (error) { return json({ error: String(error?.message || error).slice(0, 300) }, 500); }
+  }
   if (url.pathname === '/admin/cover' && request.method === 'POST') {
     if (!env.AUDIO) return json({ error:'R2 bucket binding AUDIO is missing.' }, 503);
     const type=(request.headers.get('Content-Type')||'').toLowerCase();
@@ -536,7 +590,7 @@ async function adminRoute(request, env, url) {
   }
   if (match && request.method === 'DELETE') {
     const id = match[1];
-    const found = await supabaseRest(env, `tracks?id=eq.${encodeURIComponent(id)}&select=id,audio_key,title&limit=1`);
+    const found = await supabaseRest(env, `tracks?id=eq.${encodeURIComponent(id)}&select=id,audio_key,title,cover_url&limit=1`);
     if (!found.ok) return json({ error: (await found.text()).slice(0, 280) }, 500);
     const rows = await found.json();
     const track = rows[0];
@@ -550,6 +604,13 @@ async function adminRoute(request, env, url) {
     if (track.audio_key && env.AUDIO) await env.AUDIO.delete(track.audio_key);
     const del = await supabaseRest(env, `tracks?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Prefer: 'return=minimal' } });
     if (!del.ok) return json({ error: `Audio removed and track hidden, but catalogue row cleanup failed: ${(await del.text()).slice(0, 220)}` }, 500);
+    try { // remove the cover file too unless another track still shows it
+      const coverKey = keyFromStreamUrl(track.cover_url);
+      if (coverKey.startsWith('covers/') && env.AUDIO) {
+        const others = await supabaseRest(env, `tracks?cover_url=eq.${encodeURIComponent(track.cover_url)}&select=id&limit=1`);
+        if (others.ok && !(await others.json()).length) await env.AUDIO.delete(coverKey);
+      }
+    } catch { /* the daily clean-up will catch it */ }
     await writeAudit(env, user, 'track.delete', { track_id: id, title: track.title, audio_key: track.audio_key });
     return json({ ok: true, deleted_id: id });
   }
@@ -557,6 +618,11 @@ async function adminRoute(request, env, url) {
 }
 
 export default {
+  /* Daily clean-up (cron in wrangler.toml): deletes R2 files that no track uses. Set AUTO_CLEANUP=off to disable. */
+  async scheduled(event, env, ctx) {
+    if (String(env.AUTO_CLEANUP || '').toLowerCase() === 'off') return;
+    ctx.waitUntil(cleanupStorage(env, { dryRun: false }).then((r) => console.log('SONORA clean-up', JSON.stringify(r))).catch((e) => console.error('SONORA clean-up failed:', e?.message || e)));
+  },
   async fetch(request, env) {
     const base = corsHeaders(request, env);
     if (request.method === 'OPTIONS') {
@@ -578,7 +644,7 @@ export default {
         service: 'sonora-stream',
         version: VERSION,
         status: 'online',
-        routes: ['/health', '/admin/me', '/admin/overview', '/admin/cover', '/admin/album-cover', '/admin/upload', '/admin/tracks/:id'],
+        routes: ['/health', '/admin/me', '/admin/overview', '/admin/cleanup', '/admin/cover', '/admin/album-cover', '/admin/upload', '/admin/tracks/:id'],
         note: 'This service streams music through /stream/<audio_key>. The root URL is a status page, not a music player.'
       });
     } else if (url.pathname === '/health' && (request.method === 'GET' || request.method === 'HEAD')) {

@@ -1,0 +1,21 @@
+SONORA 3.29 (part 2) — Cloudflare R2 keeps only files that are on the website  (Worker 3.29.0 + frontend)
+
+Why R2 showed 200+ objects for fewer than 100 songs
+ Each song upload also saved its own copy of the album cover (covers/...), and nothing deleted covers of removed songs or the leftovers of
+ cancelled / failed uploads. So the object count was roughly "songs + a cover per song + orphans".
+
+What changed
+ 1. Daily auto clean-up (Worker cron, 03:00 UTC): deletes every R2 file under tracks/ and covers/ that NO track in the catalogue uses.
+    Safety: files newer than 2 hours are never touched (uploads in progress); other prefixes are never touched; nothing is deleted if the
+    catalogue could not be read fully or is empty; it stops if more than half of the stored songs look unused. Set AUTO_CLEANUP=off in
+    the Worker variables to disable the daily run.
+ 2. Admin > "Storage clean-up": [Check unused files] shows the numbers without deleting; [Delete unused files] cleans now (asks first).
+ 3. Deleting a track now also deletes its cover file (unless another track still shows that cover).
+ 4. Uploads reuse one cover per album (existing catalogue album, or the same batch) instead of saving a copy for every song.
+
+Deploy (this one needs the Worker):
+ - Replace cloudflare/worker/src/index.js and wrangler.toml, then deploy:  cd cloudflare/worker && npx wrangler deploy
+   (the cron trigger [triggers] crons = ["0 3 * * *"] is in wrangler.toml; if you deploy by pasting code in the dashboard, add the
+    cron under Worker > Settings > Triggers > Cron Triggers.)
+ - Publish the frontend files. Open Admin, press "Check unused files" first to see what would go, then "Delete unused files".
+Verified: 9 Worker tests pass (incl. clean-up deletes only old unused files; refuses on empty catalogue) and the admin buttons in Chromium.

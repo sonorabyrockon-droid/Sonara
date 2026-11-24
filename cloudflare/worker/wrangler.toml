@@ -8,6 +8,9 @@ SUPABASE_URL = "https://vpvgmebrmbgdsaoxyhew.supabase.co"
 SUPABASE_PUBLISHABLE_KEY = "sb_publishable_rU8ecpCZcQCIZ3aOaYmPEQ_brzZ0FOA"
 ADMIN_EMAIL = "27-swyam.sanchit@fiib.edu.in"
 
+[triggers]
+crons = ["0 3 * * *"]   # daily clean-up of unused R2 files (03:00 UTC)
+
 [[r2_buckets]]
 binding = "AUDIO"
 bucket_name = "sonora-audio"

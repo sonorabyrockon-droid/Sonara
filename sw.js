@@ -1,6 +1,6 @@
 /* SONORA shell cache. Versioned assets prevent a previous deployment from masking updated frontend code. */
-const CACHE = 'sonora-shell-v3-28-0';
-const SHELL = ['./', './index.html', './styles.css?v=3.28.0', './app.js?v=3.28.0', './sonora-ux.js?v=3.28.0', './config.js?v=3.28.0', './sonora-offline.js?v=3.28.0', './manifest.webmanifest', './public/sonora-mark.svg'];
+const CACHE = 'sonora-shell-v3-29-0';
+const SHELL = ['./', './index.html', './styles.css?v=3.29.0', './app.js?v=3.29.0', './sonora-ux.js?v=3.29.0', './config.js?v=3.29.0', './sonora-offline.js?v=3.29.0', './manifest.webmanifest', './public/sonora-mark.svg'];
 const EXT = ['https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2', 'https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js'];
 self.addEventListener('install', (event) => {
   event.waitUntil(Promise.all([
@@ -10,12 +10,20 @@ self.addEventListener('install', (event) => {
   ]).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('sonora-shell-') && key !== CACHE && key !== CACHE + '-ext').map((key) => caches.delete(key)))).then(() => self.clients.claim()));
+  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('sonora-shell-') && key !== CACHE && key !== CACHE + '-ext' && key !== CACHE + '-img').map((key) => caches.delete(key)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
+  /* Album artwork (immutable, uuid-named) is cached on first view so covers appear instantly on every later visit. Audio is never cached here. */
+  if (/\/stream\/covers\//.test(url.pathname)) {
+    event.respondWith(caches.open(CACHE + '-img').then((cache) => cache.match(request).then((hit) => hit || fetch(request).then((response) => {
+      if (response.ok || response.type === 'opaque') { cache.put(request, response.clone()); cache.keys().then((keys) => { if (keys.length > 300) cache.delete(keys[0]); }); }
+      return response;
+    }))));
+    return;
+  }
   if (url.pathname.includes('/stream/')) return;
   /* Third-party libraries and fonts (Supabase client, tag reader, Google Fonts): cached on first load so the app can start with no connection. */
   if (url.origin !== self.location.origin) {

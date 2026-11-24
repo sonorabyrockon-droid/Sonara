@@ -1050,3 +1050,29 @@ html[data-motion=off] .notif-panel{animation:none}
 .dl-pct{font-size:11px;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .expanded-download{margin-left:auto}
 @media(max-width:380px){.row .queue-add-btn{display:none}.row{grid-template-columns:40px minmax(0,1fr) 32px 32px 32px}}
+
+/* 3.29 — upload queue: one row per file with its own percentage + Cancel */
+.uq{margin:13px 0 16px;display:grid;gap:9px}
+.uq:empty{display:none}
+.uq-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px}
+.uq-head-btn{min-height:34px;padding:6px 14px;font-size:12px}
+.uq-item{padding:12px 14px;border:1px solid var(--stroke);border-radius:var(--r-md);background:var(--glass)}
+.uq-top,.uq-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.uq-name{font-size:13px;font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.uq-pct{font:800 14px var(--font-d);font-variant-numeric:tabular-nums;flex:none}
+.uq-item .sonora-upload-track{margin:9px 0 7px}
+.uq-bottom{font-size:11px;color:var(--muted);flex-wrap:wrap}
+.uq-status{font-weight:700}
+.uq-detail{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.uq-cancel{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:4px 11px;border:1px solid var(--stroke);border-radius:999px;background:transparent;color:inherit;font:700 11.5px var(--font-b);cursor:pointer}
+.uq-cancel:hover{border-color:var(--bad);color:var(--bad)}
+.uq-cancel .ic{width:13px;height:13px}
+.uq-item[data-state="done"] .uq-fill{background:var(--ok)}
+.uq-item[data-state="failed"] .uq-fill,.uq-item[data-state="skipped"] .uq-fill{background:var(--bad)}
+.uq-item[data-state="failed"] .uq-status,.uq-item[data-state="skipped"] .uq-status{color:var(--bad)}
+.uq-item[data-state="cancelled"] .uq-fill{background:var(--muted)}
+.uq-item[data-state="cancelled"],.uq-item[data-state="queued"]{opacity:.8}
+/* Offline downloads are phone / tablet only; PC browsers do not show any download controls */
+.no-offline-ui [data-nav="downloads"],.no-offline-ui .dl-btn,.no-offline-ui #expandedDownload,.no-offline-ui [data-act="download-ctx"]{display:none!important}
+.storage-clean-btns{display:flex;gap:10px;flex-wrap:wrap}
+@media(max-width:640px){.storage-clean-btns{width:100%}.storage-clean-btns .btn{flex:1}}

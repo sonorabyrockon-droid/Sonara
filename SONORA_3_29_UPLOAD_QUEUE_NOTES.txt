@@ -1,0 +1,24 @@
+SONORA 3.29 — upload queue with per-file %, cancel, faster start, downloads on phones only (frontend only; no SQL / Worker / config changes)
+
+1. Multiple upload with percentage + Cancel (Admin > Upload music)
+ - Choose or drag many files. Every file gets its own row: title, live % bar, MB sent, speed, status and a Cancel button.
+ - Up to 3 files are uploaded at the same time (tags are still read one file at a time). "Cancel all" stops everything.
+ - Cancel works while a file is Waiting, Reading tags or Uploading. Nothing is published for a cancelled file.
+   Once a file reaches "Saving to catalogue…" (100%) the server is already writing it, so Cancel is hidden for that moment.
+ - Duplicates (already in the catalogue, or twice in the same batch) and unsupported / >100 MB files are skipped with a reason.
+ - When the batch ends the list stays visible with each result; "Clear list" removes it. The form is cleared only if every file was published.
+
+2. Faster working (like other apps)
+ - Catalogue cache: the last catalogue is saved in the browser (localStorage). The app paints from it instantly, then refreshes
+   from Supabase in the background. If the refresh fails you still see the saved catalogue.
+ - Album covers are cached by the service worker after first view (max 300), so covers load instantly on later visits.
+ - Cookies are NOT used on purpose: they are sent with every request (slower) and hold only ~4 KB. localStorage + the Cache API are what
+   other apps use for this. Audio is never cached by the service worker; offline songs stay in the encrypted downloads.
+
+3. Downloads only on phones / tablets
+ - On a PC / laptop browser the Download buttons, "Download all", the player download button and the sidebar "Downloads" link are hidden.
+   They stay on Android / iPhone / iPad. (Change `isMobileDevice` in app.js if you want a different rule.)
+
+Deploy: publish all frontend files, open the site once online, hard refresh (cache name is now sonora-shell-v3-29-0).
+Verified in real Chromium with a mock Worker: 3 files uploading in parallel with live %, cancelling one in-flight upload while the others
+finished, cancel-all, skip/duplicate handling, catalogue cache saved, no horizontal overflow at 390 px, download UI hidden on desktop and shown on mobile.

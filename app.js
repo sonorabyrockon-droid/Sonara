@@ -130,20 +130,30 @@ async function useOfflineCatalogue(reason) {
   notify(reason || 'You are offline — showing your downloaded songs.');
   return true;
 }
+const CATALOGUE_CACHE = 'sonora-cache-catalogue-v1';
+/* Saved copy of the last catalogue: the app paints from it instantly, then refreshes from the network (stale-while-revalidate). */
+function hydrateCatalogueFromCache() {
+  if (tracks.length) return false;
+  const saved = store.get(CATALOGUE_CACHE, null);
+  if (!saved || !Array.isArray(saved.rows) || !saved.rows.length) return false;
+  tracks = saved.rows.map(mapRow); loaded = true; return true;
+}
 async function loadCatalogue({ renderAfter = true } = {}) {
   if (!sb || navigator.onLine === false) {
     loaded = true;
     if (navigator.onLine === false) await useOfflineCatalogue();
     restoreLast(); if (renderAfter) render(); return;
   }
+  if (hydrateCatalogueFromCache()) { restoreLast(); if (renderAfter) render(); }
   const { data, error } = await sb.from('tracks')
     .select('id,title,artist,album,genre,description,duration_seconds,audio_key,audio_url,cover_url,created_at')
     .eq('status', 'published').order('created_at', { ascending:false }).limit(500);
   loaded = true; loadError = Boolean(error);
   if (error) {
     console.error('Catalogue:', error);
-    if (!(await useOfflineCatalogue('Could not reach SONORA — showing your downloaded songs.'))) notify(`Could not load music: ${error.message || 'Supabase query failed'}`);
-  } else { tracks = (data || []).map(mapRow); offlineCatalogue = false; }
+    if (tracks.length && !offlineCatalogue) notify('Could not refresh — showing your saved catalogue.');
+    else if (!(await useOfflineCatalogue('Could not reach SONORA — showing your downloaded songs.'))) notify(`Could not load music: ${error.message || 'Supabase query failed'}`);
+  } else { tracks = (data || []).map(mapRow); offlineCatalogue = false; store.set(CATALOGUE_CACHE, { ts:Date.now(), rows:data || [] }); }
   restoreLast();
   if (renderAfter) render();
 }
@@ -193,7 +203,10 @@ const rows = (list, ctx, opts) => `<div class="rows" data-ctx="${esc(ctx)}">${li
 
 /* ---------- offline downloads (encrypted; see sonora-offline.js) ---------- */
 const OFF = () => window.SonoraOffline;
-const offlineOK = () => Boolean(OFF()?.supported);
+/* Offline downloads are for phones and tablets. On a PC / laptop browser the Download buttons, "Download all" and the Downloads page link are hidden. */
+const isMobileDevice = /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+document.documentElement.classList.toggle('no-offline-ui', !isMobileDevice);
+const offlineOK = () => isMobileDevice && Boolean(OFF()?.supported);
 function dlState(id) { const o = OFF(); if (!o) return 'none'; if (o.isBusy(id)) return 'busy'; return o.has(id) ? 'done' : 'idle'; }
 function downloadButton(t, cls = 'icon-btn dl-btn') {
   if (!offlineOK()) return '';
@@ -496,17 +509,18 @@ async function workerRequest(path, options = {}) {
 }
 // XMLHttpRequest is used only for the large audio body so the browser can expose
 // upload progress. The same short-lived Supabase access token protects the route.
-async function workerUploadRequest(path, file, onProgress) {
+async function workerUploadRequest(path, file, onProgress, handle = null) {
   if (!C.STREAM_URL) throw new Error('STREAM_URL is not configured in config.js.');
   if (!sb) throw new Error('Supabase client is not initialized.');
   const token = await requireAccessToken();
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    if (handle) handle.abort = () => xhr.abort();   // lets the upload queue cancel this file while its bytes are still being sent
     xhr.open('POST', `${String(C.STREAM_URL).replace(/\/$/,'')}${path}`);
     xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
     xhr.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable) onProgress?.(event.loaded, event.total, Math.min(100, Math.round(event.loaded / event.total * 100)));
+      if (event.lengthComputable) onProgress?.(event.loaded, event.total, Math.min(99, Math.round(event.loaded / event.total * 100)));
     });
     xhr.upload.addEventListener('load', () => onProgress?.(file.size, file.size, 100, 'Processing on server…'));
     xhr.addEventListener('load', () => {
@@ -516,7 +530,7 @@ async function workerUploadRequest(path, file, onProgress) {
       else reject(new Error(body.error || `Worker returned HTTP ${xhr.status}.`));
     });
     xhr.addEventListener('error', () => reject(new Error('Network error during upload. Check your connection and Worker availability.')));
-    xhr.addEventListener('abort', () => reject(new Error('Upload was cancelled.')));
+    xhr.addEventListener('abort', () => reject(Object.assign(new Error('Upload cancelled.'), { cancelled: true })));
     xhr.addEventListener('timeout', () => reject(new Error('Upload timed out. Try again with a smaller file or a more stable connection.')));
     xhr.timeout = 15 * 60 * 1000;
     xhr.send(file);
@@ -1167,163 +1181,169 @@ async function uploadAdminArtwork(blob) {
   const result=await workerRequest('/admin/cover',{method:'POST',headers:{'Content-Type':mime},body:blob});
   return result.cover_url||'';
 }
-function updateAdminUploadProgress(percent, label, detail = '') {
-  const wrap=$('sonoraUploadProgress'), fill=$('sonoraUploadFill'), bar=$('sonoraUploadBar');
-  if(wrap)wrap.classList.remove('hidden');
-  const value=Math.max(0,Math.min(100,Math.round(Number(percent)||0)));
-  if(fill)fill.style.width=`${value}%`;
-  if(bar)bar.setAttribute('aria-valuenow',String(value));
-  if($('sonoraUploadPercent'))$('sonoraUploadPercent').textContent=`${value}%`;
-  if($('sonoraUploadLabel'))$('sonoraUploadLabel').textContent=label||'Uploading…';
-  if($('sonoraUploadDetail'))$('sonoraUploadDetail').textContent=detail;
-}
 function formatUploadBytes(bytes) {
   const n=Math.max(0,Number(bytes)||0);
   return n>=1048576?`${(n/1048576).toFixed(1)} MB`:n>=1024?`${(n/1024).toFixed(0)} KB`:`${Math.round(n)} B`;
 }
-async function uploadAdminTrack(form, fileOverride = null, batchMode = false, batchInfo = null) {
-  if (!isAdmin) { notify('Administrator access is required.'); return; }
-  const file = fileOverride || $('adminAudioFile')?.files?.[0];
-  const title = $('adminTrackTitle')?.value.trim();
-  const artist = $('adminTrackArtist')?.value.trim();
-  if (!file) { notify('Choose an audio file first.'); return; }
-  if (!title || !artist) { notify('Automatic tags could not identify the title or artist. Please fill only the missing required fields.'); return; }
-  const norm=(v)=>String(v||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  const duplicate=tracks.find(t=>norm(t.title)===norm(title)&&norm(t.artist)===norm(artist));
-  if(duplicate){ notify(`Possible duplicate blocked: “${duplicate.title}” by ${duplicate.artist} is already in the catalogue. Check the existing track before uploading again.`); return; }
-  if (file.size > 100 * 1024 * 1024) { notify('Direct upload limit is 100 MB per track.'); return; }
-  const allowed = /\.(mp3|m4a|mp4|aac|wav|ogg|opus|flac|webm)$/i;
-  if (!allowed.test(file.name)) { notify('Unsupported audio format. Use MP3, M4A, AAC, WAV, OGG, OPUS, FLAC or WEBM.'); return; }
-  const button = $('adminUploadBtn'); if (button) { button.disabled = true; button.textContent = 'Preparing upload…'; }
-  const progressWrap=$('sonoraUploadProgress'); if(progressWrap)progressWrap.dataset.state='';
-  const batchPrefix = batchInfo ? `Track ${batchInfo.index} of ${batchInfo.total} · ` : '';
-  updateAdminUploadProgress(0, `${batchPrefix}Preparing audio upload`, `${file.name} · ${formatUploadBytes(file.size)}`);
-  let uploadStartedAt=0, lastProgressBytes=0, lastProgressAt=0;
+/* ---------- upload queue: every file has its own percentage bar and Cancel button ---------- */
+const UPLOAD_PARALLEL = 3;               // files sent at the same time (tags are still read one by one)
+const UPLOAD_LIVE = ['queued', 'scanning', 'uploading', 'finalizing'];
+let uploadQueue = [], uploadSeq = 0, adminUploadInProgress = false;
+const uploadCoverByAlbum = new Map();   // album -> cover upload (shared by parallel uploads of the same album)
+const uqStatusText = { queued:'Waiting', scanning:'Reading tags…', uploading:'Uploading', finalizing:'Saving to catalogue…', done:'Published', failed:'Failed', cancelled:'Cancelled', skipped:'Skipped' };
+function uqItemHtml(q) {
+  const live = UPLOAD_LIVE.includes(q.status), canCancel = ['queued', 'scanning', 'uploading'].includes(q.status);
+  const detail = q.status === 'uploading' ? `${formatUploadBytes(q.loaded)} of ${formatUploadBytes(q.file.size)}${q.speed > 0 ? ` · ${(q.speed / 1048576).toFixed(2)} MB/s` : ''}`
+    : q.msg || `${formatUploadBytes(q.file.size)}`;
+  return `<div class="uq-item" data-qid="${q.id}" data-state="${q.status}">
+    <div class="uq-top"><span class="uq-name" title="${esc(q.file.name)}">${esc(q.title || q.file.name)}</span><span class="uq-pct">${q.status === 'done' ? '100%' : live || q.status === 'failed' ? `${q.pct}%` : ''}</span></div>
+    <div class="sonora-upload-track" role="progressbar" aria-label="Upload progress for ${esc(q.file.name)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${q.pct}"><span class="uq-fill" style="width:${q.pct}%"></span></div>
+    <div class="uq-bottom"><span class="uq-status">${uqStatusText[q.status] || ''}</span><span class="uq-detail">${esc(detail)}</span>${canCancel ? `<button type="button" class="uq-cancel" data-act="upload-cancel" data-qid="${q.id}" aria-label="Cancel upload of ${esc(q.file.name)}">${ic('x')}Cancel</button>` : ''}</div>
+  </div>`;
+}
+function uploadQueueHtml() {
+  if (!uploadQueue.length) return '';
+  const live = uploadQueue.some((q) => UPLOAD_LIVE.includes(q.status)), done = uploadQueue.filter((q) => q.status === 'done').length;
+  return `<div class="uq-head"><strong>${live ? `Uploading · ${done} of ${uploadQueue.length} published` : `Finished · ${done} of ${uploadQueue.length} published`}</strong>${live
+    ? '<button type="button" class="btn btn-glass uq-head-btn" data-act="upload-cancel-all">Cancel all</button>'
+    : '<button type="button" class="btn btn-glass uq-head-btn" data-act="upload-clear">Clear list</button>'}</div>${uploadQueue.map(uqItemHtml).join('')}`;
+}
+function paintUploadQueue() { const host = $('sonoraUploadQueue'); if (host) host.innerHTML = uploadQueueHtml(); }
+function paintUploadItem(q) {   // cheap update used on every progress event
+  const el = document.querySelector(`.uq-item[data-qid="${q.id}"]`); if (!el) return;
+  const fill = el.querySelector('.uq-fill'); if (fill) fill.style.width = `${q.pct}%`;
+  const pct = el.querySelector('.uq-pct'); if (pct) pct.textContent = `${q.pct}%`;
+  el.querySelector('[role=progressbar]')?.setAttribute('aria-valuenow', String(q.pct));
+  const d = el.querySelector('.uq-detail'); if (d) d.textContent = `${formatUploadBytes(q.loaded)} of ${formatUploadBytes(q.file.size)}${q.speed > 0 ? ` · ${(q.speed / 1048576).toFixed(2)} MB/s` : ''}`;
+}
+function cancelUploadItem(q) {
+  if (!q || !UPLOAD_LIVE.includes(q.status) || q.status === 'finalizing') return;   // once the server is saving the track it can no longer be stopped safely
+  q.cancelled = true;
+  if (q.status === 'uploading' && q.handle?.abort) q.handle.abort();               // runUpload() marks it cancelled
+  else { q.status = 'cancelled'; q.msg = 'Cancelled before upload'; paintUploadQueue(); }
+}
+const probeAudioDuration = (file) => new Promise((resolve) => {
+  const url = URL.createObjectURL(file), probe = new Audio(); probe.preload = 'metadata'; probe.src = url;
+  probe.onloadedmetadata = () => { URL.revokeObjectURL(url); resolve(Number.isFinite(probe.duration) ? Math.floor(probe.duration) : 0); };
+  probe.onerror = () => { URL.revokeObjectURL(url); resolve(0); };
+});
+async function runUpload(q, meta) {
   try {
-    let duration = adminDetectedFile === file ? adminDetectedDuration : 0;
-    if (adminDetectedFile !== file) {
-      try {
-        const tempUrl = URL.createObjectURL(file);
-        duration = await new Promise((resolve) => {
-          const probe = new Audio(); probe.preload = 'metadata'; probe.src = tempUrl;
-          probe.onloadedmetadata = () => { URL.revokeObjectURL(tempUrl); resolve(Number.isFinite(probe.duration) ? Math.floor(probe.duration) : 0); };
-          probe.onerror = () => { URL.revokeObjectURL(tempUrl); resolve(0); };
-        });
-      } catch { duration = 0; }
+    q.status = 'uploading'; q.pct = 0; q.loaded = 0; q.speed = 0; paintUploadQueue();
+    let coverUrl = '';
+    if (meta.artwork) {   // one cover file per album: reuse it for every song of that album (catalogue or this batch) instead of storing a copy per song
+      const albumKey = /^single$/i.test(meta.album || '') || !meta.album ? '' : String(meta.album).toLowerCase().trim();
+      const existing = albumKey && tracks.find((t) => String(t.album || '').toLowerCase().trim() === albumKey && t.coverUrl);
+      if (existing) coverUrl = existing.coverUrl;
+      else {
+        if (!albumKey) { try { coverUrl = await uploadAdminArtwork(meta.artwork); } catch (error) { console.warn('Album artwork upload failed', error); } }
+        else {
+          if (!uploadCoverByAlbum.has(albumKey)) uploadCoverByAlbum.set(albumKey, uploadAdminArtwork(meta.artwork).catch((error) => { console.warn('Album artwork upload failed', error); return ''; }));
+          coverUrl = await uploadCoverByAlbum.get(albumKey);
+        }
+      }
     }
-    let coverUrl='';
-    if(adminDetectedArtwork){try{if(button)button.textContent='Saving album artwork…';updateAdminUploadProgress(0,`${batchPrefix}Saving album artwork`,'Uploading detected cover image…');coverUrl=await uploadAdminArtwork(adminDetectedArtwork);}catch(error){console.warn('Album artwork upload failed',error);notify('Artwork could not be saved; continuing with audio upload.');}}
-    const params = new URLSearchParams({
-      title, artist,
-      album:$('adminTrackAlbum')?.value.trim() || 'Single',
-      genre:$('adminTrackGenre')?.value || 'Other',
-      filename:file.name,
-      duration:String(duration),
-      cover_url:coverUrl
-    });
-    if(button)button.textContent='Uploading 0%…';
-    uploadStartedAt=Date.now(); lastProgressAt=uploadStartedAt;
-    const result = await workerUploadRequest(`/admin/upload?${params.toString()}`, file, (loaded,total,percent,stage) => {
-      const now=Date.now();
-      const elapsed=Math.max(.25,(now-lastProgressAt)/1000);
-      const speed=(loaded-lastProgressBytes)/elapsed;
-      lastProgressBytes=loaded; lastProgressAt=now;
-      const detail=stage || `${formatUploadBytes(loaded)} of ${formatUploadBytes(total)}${speed>0?` · ${(speed/1048576).toFixed(2)} MB/s`:''}`;
-      updateAdminUploadProgress(percent,`${batchPrefix}${stage||'Uploading audio to private R2'}`,detail);
-      if(button)button.textContent=stage?'Finalizing…':`Uploading ${percent}%…`;
-    });
-    updateAdminUploadProgress(100,'Upload complete','Audio saved to R2; catalogue record created in Supabase.');
-    if (result.track?.id) {
-      const savedTrack = mapRow(result.track);
-      tracks = [savedTrack, ...tracks.filter(item => String(item.id) !== String(savedTrack.id))];
-    }
-    if (!batchMode) form.reset(); adminDetectedArtwork=null; adminDetectedAlbum=null; if(!batchMode)adminDetectedFile=null;
-    const coverPreview=$('adminCoverPreview'); if(coverPreview){coverPreview.src='';coverPreview.classList.add('hidden');}
-    setAdminMetaStatus('Track published. Select another audio file to scan its tags.','success');
-    notify(`Uploaded “${title}” to Cloudflare R2 and published it.`);
-    if (!batchMode) {
-      adminOverviewCachedAt=0;
-      await loadCatalogue({renderAfter:false});
-      await loadAdminDashboard(true);
-    }
+    if (q.cancelled) throw Object.assign(new Error('Upload cancelled.'), { cancelled: true });
+    const params = new URLSearchParams({ title:meta.title, artist:meta.artist, album:meta.album || 'Single', genre:meta.genre || 'Other', filename:q.file.name, duration:String(meta.duration || 0), cover_url:coverUrl });
+    let lastBytes = 0, lastAt = Date.now();
+    q.handle = {};
+    const result = await workerUploadRequest(`/admin/upload?${params.toString()}`, q.file, (loaded, total, percent, stage) => {
+      if (stage) { q.status = 'finalizing'; q.pct = 100; q.loaded = total; paintUploadQueue(); return; }
+      const now = Date.now(), dt = (now - lastAt) / 1000;
+      if (dt >= .4) { const inst = (loaded - lastBytes) / dt; q.speed = q.speed ? q.speed * .6 + inst * .4 : inst; lastBytes = loaded; lastAt = now; }
+      q.loaded = loaded; q.pct = percent; paintUploadItem(q);
+    }, q.handle);
+    q.status = 'done'; q.pct = 100; q.msg = 'Published to the catalogue';
+    if (result.track?.id) { const saved = mapRow(result.track); tracks = [saved, ...tracks.filter((item) => String(item.id) !== String(saved.id))]; }
     return true;
   } catch (error) {
-    console.error('SONORA admin upload:', error);
-    updateAdminUploadProgress(0,'Upload failed',error.message);
-    const wrap=$('sonoraUploadProgress'); if(wrap)wrap.dataset.state='error';
-    notify(`Upload failed: ${error.message}`);
+    if (error?.cancelled || q.cancelled) { q.status = 'cancelled'; q.pct = 0; q.msg = 'Cancelled — nothing was published'; }
+    else { console.error('SONORA admin upload:', error); q.status = 'failed'; q.msg = error.message; }
     return false;
-  } finally {
-    if (button && !batchMode) { button.disabled = false; button.innerHTML = `${ic('plus')}Upload and publish`; }
-  }
+  } finally { q.handle = null; paintUploadQueue(); }
 }
-let adminUploadInProgress = false;
 async function uploadAdminBatch(form) {
-  if (adminUploadInProgress) { notify('An upload is already running. Please let it finish before starting another.'); return; }
-  const input = $('adminAudioFile');
-  const files = Array.from(input?.files || []);
+  if (!isAdmin) { notify('Administrator access is required.'); return; }
+  if (adminUploadInProgress) { notify('Uploads are already running. Cancel them or wait for them to finish.'); return; }
+  const input = $('adminAudioFile'), files = Array.from(input?.files || []);
   if (!files.length) { notify('Choose one or more audio files first.'); return; }
-  const button = $('adminUploadBtn');
+  const button = $('adminUploadBtn'), single = files.length === 1;
   adminUploadInProgress = true;
-  if (button) { button.disabled = true; button.textContent = files.length > 1 ? `Preparing ${files.length} tracks…` : 'Preparing upload…'; }
+  if (button) { button.disabled = true; button.textContent = single ? 'Uploading…' : `Uploading ${files.length} tracks…`; }
   if (input) input.disabled = true;
-  let succeeded = 0, failed = 0, catalogueRefreshed = false;
-  const batchAlbumCache = new Map();
+  uploadCoverByAlbum.clear();
+  uploadQueue = files.map((file) => ({ id:++uploadSeq, file, status:'queued', pct:0, loaded:0, speed:0, title:'', msg:'', cancelled:false, handle:null }));
+  paintUploadQueue();
+  const norm = (v) => String(v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const inFlight = new Set(), running = new Set(), albumCache = new Map(), allowedExt = /\.(mp3|m4a|mp4|aac|wav|ogg|opus|flac|webm)$/i;
+  let succeeded = 0, failed = 0, cancelled = 0;
   try {
-    if (files.length === 1) {
-      const file = files[0];
-      if (adminDetectionPromise) await adminDetectionPromise;
-      if (adminDetectedFile !== file) {
-        adminDetectionPromise = detectAdminAudio(file);
-        try { await adminDetectionPromise; } finally { adminDetectionPromise = null; }
+    for (const q of uploadQueue) {
+      if (q.cancelled) { cancelled++; continue; }
+      const file = q.file;
+      if (file.size > 100 * 1024 * 1024 || !allowedExt.test(file.name)) { q.status = 'skipped'; q.msg = 'Unsupported format or larger than 100 MB'; failed++; paintUploadQueue(); continue; }
+      if (single) {
+        if (adminDetectionPromise) await adminDetectionPromise;
+        if (adminDetectedFile !== file) { adminDetectionPromise = detectAdminAudio(file); try { await adminDetectionPromise; } finally { adminDetectionPromise = null; } }
+      } else {
+        q.status = 'scanning'; paintUploadQueue();
+        $('adminTrackTitle').value = ''; $('adminTrackArtist').value = ''; $('adminTrackAlbum').value = ''; $('adminTrackGenre').value = 'Other';
+        setAdminMetaStatus(`Track ${uploadQueue.indexOf(q) + 1} of ${uploadQueue.length} · Detecting tags and soundtrack album…`);
+        await detectAdminAudio(file, albumCache);
       }
-      const ok = await uploadAdminTrack(form, file, false);
-      if (ok) succeeded++; else failed++;
-      return;
+      if (q.cancelled) { cancelled++; continue; }
+      const meta = { title:$('adminTrackTitle')?.value.trim(), artist:$('adminTrackArtist')?.value.trim(), album:$('adminTrackAlbum')?.value.trim(), genre:$('adminTrackGenre')?.value,
+        duration: adminDetectedFile === file ? adminDetectedDuration : 0, artwork: adminDetectedArtwork };
+      if (!meta.title || !meta.artist) { q.status = 'failed'; q.msg = 'Title or artist could not be detected — fill them in and upload this file alone.'; failed++; paintUploadQueue(); if (single) notify('Automatic tags could not identify the title or artist. Please fill only the missing required fields.'); continue; }
+      q.title = `${meta.title} · ${meta.artist}`;
+      const key = `${norm(meta.title)}|${norm(meta.artist)}`;
+      const duplicate = inFlight.has(key) ? { title:meta.title, artist:meta.artist } : tracks.find((t) => norm(t.title) === norm(meta.title) && norm(t.artist) === norm(meta.artist));
+      if (duplicate) { q.status = 'skipped'; q.msg = 'Possible duplicate — already in the catalogue'; failed++; paintUploadQueue(); continue; }
+      inFlight.add(key);
+      if (!meta.duration) meta.duration = await probeAudioDuration(file);
+      const job = runUpload(q, meta).then((ok) => { if (ok) succeeded++; else if (q.status === 'cancelled') cancelled++; else failed++; }).finally(() => running.delete(job));
+      running.add(job);
+      if (running.size >= UPLOAD_PARALLEL) await Promise.race(running);
     }
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (file.size > 100 * 1024 * 1024 || !/\.(mp3|m4a|mp4|aac|wav|ogg|opus|flac|webm)$/i.test(file.name)) {
-        failed++; notify(`Skipped unsupported or oversized file: ${file.name}`); continue;
-      }
-      $('adminTrackTitle').value = ''; $('adminTrackArtist').value = ''; $('adminTrackAlbum').value = ''; $('adminTrackGenre').value = 'Other';
-      setAdminMetaStatus(`Track ${i + 1} of ${files.length} · Detecting tags and soundtrack album…`);
-      await detectAdminAudio(file,batchAlbumCache);
-      if (button) button.textContent = `Uploading ${i + 1}/${files.length}…`;
-      const ok = await uploadAdminTrack(form, file, true, {index:i+1,total:files.length});
-      if (ok) succeeded++; else failed++;
-    }
+    await Promise.all(running);
   } catch (error) {
-    failed++;
-    console.error('SONORA batch upload:', error);
-    notify(`Batch upload stopped: ${error.message}`);
+    failed++; console.error('SONORA batch upload:', error); notify(`Upload stopped: ${error.message}`);
+    await Promise.allSettled(running);
   } finally {
-    if (files.length > 1 && succeeded && !catalogueRefreshed) {
-      try {
-        setAdminMetaStatus(`Uploaded ${succeeded} of ${files.length} files. Refreshing the catalogue…`, 'success');
-        adminOverviewCachedAt=0;
-        await loadCatalogue({renderAfter:false});
-        await loadAdminDashboard(true);
-        catalogueRefreshed = true;
-      } catch (refreshError) {
-        console.error('SONORA post-batch catalogue refresh:', refreshError);
-        notify(`Uploads succeeded, but the catalogue refresh failed: ${refreshError.message}`);
-      }
+    uploadQueue.forEach((q) => { if (UPLOAD_LIVE.includes(q.status)) { q.status = 'cancelled'; q.msg = 'Stopped'; } });
+    paintUploadQueue();
+    if (succeeded) {
+      try { setAdminMetaStatus(`Uploaded ${succeeded} of ${files.length} files. Refreshing the catalogue…`, 'success'); adminOverviewCachedAt = 0; await loadCatalogue({ renderAfter:false }); await loadAdminDashboard(true); }
+      catch (refreshError) { console.error('SONORA post-upload catalogue refresh:', refreshError); notify(`Uploads succeeded, but the catalogue refresh failed: ${refreshError.message}`); }
     }
-    if (files.length > 1) {
-      if (input) { input.value = ''; input.disabled = false; }
-      adminDetectedFile=null; adminDetectedDuration=0; adminDetectionPromise=null; adminDetectedArtwork=null; adminDetectedAlbum=null;
-      $('adminTrackTitle').value = ''; $('adminTrackArtist').value = ''; $('adminTrackAlbum').value = '';
-      if ($('sonoraSelectedFile')) $('sonoraSelectedFile').textContent = 'No files selected';
-      const preview=$('adminCoverPreview'); if(preview){preview.src='';preview.classList.add('hidden');}
-      setAdminMetaStatus(`Batch finished · ${succeeded} uploaded · ${failed} failed or skipped.`, failed ? 'warning' : 'success');
-      notify(`Batch upload complete: ${succeeded} uploaded, ${failed} failed or skipped.`);
-    } else if (input) input.disabled = false;
+    if (succeeded === files.length) { form.reset(); if (input) input.value = ''; if ($('sonoraSelectedFile')) $('sonoraSelectedFile').textContent = 'No files selected'; }
+    adminDetectedFile = null; adminDetectedDuration = 0; adminDetectionPromise = null; adminDetectedArtwork = null; adminDetectedAlbum = null;
+    const preview = $('adminCoverPreview'); if (preview) { preview.src = ''; preview.classList.add('hidden'); }
+    setAdminMetaStatus(`Finished · ${succeeded} published${cancelled ? ` · ${cancelled} cancelled` : ''}${failed ? ` · ${failed} failed or skipped` : ''}.`, failed ? 'warning' : 'success');
+    notify(succeeded ? `${succeeded} track${succeeded === 1 ? '' : 's'} published${cancelled || failed ? ` (${cancelled} cancelled, ${failed} failed)` : ''}.` : cancelled && !failed ? 'Upload cancelled.' : 'No tracks were published.');
+    if (input) input.disabled = false;
     if (button) { button.disabled = false; button.innerHTML = `${ic('plus')}Upload and publish`; }
     adminUploadInProgress = false;
+    paintUploadQueue();
   }
 }
 
+const fmtMB = (n) => `${(Number(n || 0) / 1048576).toFixed(1)} MB`;
+async function runStorageCleanup(dryRun) {
+  const out = $('storageCleanResult'); if (!out) return;
+  if (!dryRun && !confirm('Delete every R2 file that no track on the website uses? This cannot be undone.')) return;
+  qsa('[data-act=storage-scan],[data-act=storage-clean]').forEach((b) => { b.disabled = true; });
+  out.textContent = dryRun ? 'Checking R2…' : 'Deleting unused files…';
+  try {
+    const r = await workerRequest('/admin/cleanup', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ dry_run:dryRun }) });
+    const unused = (r.unused_songs || 0) + (r.unused_covers || 0);
+    out.textContent = dryRun
+      ? `${r.files_in_r2} files in R2 · ${r.files_in_use} used by ${r.catalogue_tracks} tracks · ${unused} unused (${r.unused_songs} audio, ${r.unused_covers} covers, ${fmtMB(r.unused_bytes)})${r.skipped_recent ? ` · ${r.skipped_recent} brand-new skipped` : ''}.`
+      : `Deleted ${r.deleted} unused files (${fmtMB(r.unused_bytes)}). ${r.files_in_use} files remain, all used by tracks.`;
+    if (!dryRun) { adminOverviewCachedAt = 0; loadAdminDashboard(true); }
+  } catch (error) { out.textContent = `Clean-up stopped: ${error.message}`; }
+  finally { qsa('[data-act=storage-scan],[data-act=storage-clean]').forEach((b) => { b.disabled = false; }); }
+}
 async function deleteAdminTrack(id) {
   const track = (adminOverview?.tracks || []).find((x) => x.id === id);
   if (!isAdmin || !confirm(`Delete “${track?.title || 'this track'}” and its Cloudflare R2 audio file? This cannot be undone.`)) return;
@@ -1561,16 +1581,15 @@ const views = {
           </div>
           <div class="field"><label for="adminAudioFile">AUDIO FILE (MP3, M4A, AAC, WAV, OGG, OPUS, FLAC, WEBM · MAX 100 MB)</label><label class="sonora-dropzone" id="sonoraDropzone" for="adminAudioFile"><span class="dropzone-icon">♫</span><strong>Choose audio files or drag them here</strong><span>Multiple selection supported · MP3, M4A, WAV, FLAC and more · Up to 100 MB each</span><input id="adminAudioFile" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac,.webm" multiple required><small id="sonoraSelectedFile">No file selected</small></label></div>
           <div class="admin-meta-result" id="adminMetaStatus" role="status" aria-live="polite">Select an audio file. SONORA will scan its embedded tags, cover art and technical details.</div>
-          <div class="sonora-upload-progress hidden" id="sonoraUploadProgress" aria-live="polite">
-            <div class="sonora-upload-progress-top"><strong id="sonoraUploadLabel">Preparing upload…</strong><span id="sonoraUploadPercent">0%</span></div>
-            <div class="sonora-upload-track" role="progressbar" aria-label="Audio upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="sonoraUploadBar"><span id="sonoraUploadFill"></span></div>
-            <div class="sonora-upload-progress-bottom"><span id="sonoraUploadDetail">Waiting to upload</span><span id="sonoraUploadSpeed"></span></div>
-          </div>
+          <div class="uq" id="sonoraUploadQueue" aria-live="polite">${uploadQueueHtml()}</div>
           <div class="admin-cover-preview-wrap"><img id="adminCoverPreview" class="admin-cover-preview hidden" alt="Detected album artwork preview"></div>
           <div class="upload-foot"><p class="muted">Only upload recordings you own or are licensed to distribute. The service rejects non-audio extensions.</p><button class="btn btn-primary" id="adminUploadBtn" type="submit">${ic('plus')}Upload and publish</button></div>
         </form>
       </section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Music catalogue</h2><p>Search, edit, unpublish or permanently delete a track and its R2 object.</p></div><span class="muted" id="adminCatalogCount">Latest 250 records</span></div><div class="catalog-search"><span>⌕</span><input class="input" id="adminCatalogSearch" type="search" value="${esc(adminCatalogQuery)}" placeholder="Search title, artist, album, genre or description…" aria-label="Search music catalogue"></div><div class="admin-track-list" id="adminTracks"><p class="muted">Loading catalogue…</p></div></section>
+      <section class="admin-section glass"><div class="section-top"><div><h2>Storage clean-up</h2><p>Cloudflare R2 should hold only the audio and cover files that tracks on the website use. Unused files (cancelled or failed uploads, covers of deleted songs) are removed automatically every day; you can also check or clean now.</p></div><span class="storage-pill">AUTO · DAILY</span></div>
+        <div class="upload-foot"><p class="muted" id="storageCleanResult">Files uploaded in the last 2 hours are never touched. Nothing is deleted when you only check.</p><div class="storage-clean-btns"><button class="btn btn-glass" type="button" data-act="storage-scan">Check unused files</button><button class="btn btn-primary" type="button" data-act="storage-clean">Delete unused files</button></div></div>
+      </section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Admin activity</h2><p>Recent upload, update and delete actions.</p></div></div><div id="adminAudit" class="admin-audit"><p class="muted">Loading activity…</p></div></section>
       <section class="admin-note"><strong>Reliability & safety</strong><p>Dashboard checks show current service reachability, not a guarantee against outages. Cloudflare CPU, request volume and edge errors remain available in the Worker Metrics and Observability tabs. Uploads are limited to 100 MB per file; the hourly upload ceiling is a high safety limit that only successful uploads count towards.</p></section>
     </div>`;
@@ -2106,6 +2125,11 @@ $('view').addEventListener('click', (e) => {
   if (a) {
     const row = a.closest('.row'), id = a.dataset.id || row?.dataset.id, ctx = a.dataset.ctx || row?.dataset.ctx;
     switch (a.dataset.act) {
+      case 'upload-cancel': cancelUploadItem(uploadQueue.find((q) => String(q.id) === a.dataset.qid)); break;
+      case 'upload-cancel-all': uploadQueue.forEach(cancelUploadItem); break;
+      case 'storage-scan': runStorageCleanup(true); break;
+      case 'storage-clean': runStorageCleanup(false); break;
+      case 'upload-clear': uploadQueue = []; paintUploadQueue(); break;
       case 'like': toggleLike(id); break;
       case 'queue-add': addToQueue(id); break;
       case 'add': addDialog(id); break;

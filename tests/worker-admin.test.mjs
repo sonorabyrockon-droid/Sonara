@@ -191,3 +191,40 @@ test('album cover route applies one cover to many tracks', async () => {
     assert.equal(badUrl.status,400);
   } finally { globalThis.fetch=originalFetch; }
 });
+
+test('storage clean-up deletes only old R2 files that no track uses', async () => {
+  const old = new Date(Date.now() - 6 * 3600e3), fresh = new Date();
+  const objects = [
+    { key:'tracks/2026-11-01/used.mp3', size:100, uploaded:old },
+    { key:'tracks/2026-11-01/orphan.mp3', size:200, uploaded:old },
+    { key:'covers/2026-11-01/used.jpg', size:10, uploaded:old },
+    { key:'covers/2026-11-01/orphan.jpg', size:20, uploaded:old },
+    { key:'covers/2026-11-24/just-uploaded.jpg', size:30, uploaded:fresh },
+    { key:'other/readme.txt', size:1, uploaded:old }
+  ];
+  const deleted = [];
+  const e = { ...env, AUDIO:{ list:async()=>({ objects, truncated:false }), delete:async(keys)=>{ deleted.push(...[].concat(keys)); } } };
+  globalThis.fetch = async (input, init={}) => {
+    const url = new URL(input); const auth = authResponse(url); if (auth) return auth;
+    if (url.pathname.endsWith('/rest/v1/tracks')) return jsonResponse([{ audio_key:'tracks/2026-11-01/used.mp3', cover_url:'https://w.example.test/stream/covers/2026-11-01/used.jpg' }], 200, { 'Content-Range':'0-0/1' });
+    if (url.pathname.endsWith('/rest/v1/sonora_admin_audit')) return jsonResponse([]);
+    throw new Error(`Unexpected fetch in test: ${init.method||'GET'} ${url}`);
+  };
+  try {
+    const call = (body) => worker.fetch(new Request('https://worker.example.test/admin/cleanup', { method:'POST', headers:{ Authorization:'Bearer t', Origin:'https://sonora.example.test', 'Content-Type':'application/json' }, body:JSON.stringify(body) }), e);
+    const preview = await (await call({})).json();
+    assert.equal(preview.dry_run, true); assert.equal(preview.unused_songs, 1); assert.equal(preview.unused_covers, 1); assert.equal(preview.skipped_recent, 1); assert.deepEqual(deleted, []);
+    const real = await (await call({ dry_run:false })).json();
+    assert.equal(real.deleted, 2); assert.deepEqual(deleted.sort(), ['covers/2026-11-01/orphan.jpg', 'tracks/2026-11-01/orphan.mp3']);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('storage clean-up refuses to delete when the catalogue looks empty', async () => {
+  const deleted = [];
+  const e = { ...env, AUDIO:{ list:async()=>({ objects:[{ key:'tracks/a.mp3', size:1, uploaded:new Date(0) }], truncated:false }), delete:async(k)=>{ deleted.push(k); } } };
+  globalThis.fetch = async (input) => { const url = new URL(input); const auth = authResponse(url); if (auth) return auth; return jsonResponse([], 200, { 'Content-Range':'*/0' }); };
+  try {
+    const res = await worker.fetch(new Request('https://worker.example.test/admin/cleanup', { method:'POST', headers:{ Authorization:'Bearer t', Origin:'https://sonora.example.test', 'Content-Type':'application/json' }, body:JSON.stringify({ dry_run:false }) }), e);
+    assert.equal(res.status, 500); assert.deepEqual(deleted, []);
+  } finally { globalThis.fetch = originalFetch; }
+});
