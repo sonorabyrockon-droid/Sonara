@@ -248,6 +248,7 @@ let menu = null, backdrop = null, menuOrigin = null, openedAt = 0, suppressClick
 const ICON = {
   queue: '<path d="M3 6h12M3 12h12M3 18h7M18 14v6M15 17h6"/>',
   list: '<path d="M4 6h12M4 12h12M4 18h8M19 8v8a2 2 0 1 1-2-2"/>',
+  download: '<path d="M12 4v11M7 11l5 5 5-5M5 20h14"/>',
   heart: '<path d="M12 20s-7-4.4-9-9a5 5 0 0 1 9-3 5 5 0 0 1 9 3c-2 4.6-9 9-9 9z"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   disc: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/>',
@@ -270,6 +271,7 @@ function openMenu(trackId, x, y, origin, sheet) {
   const items = [
     ['queue', 'Add to queue', () => App.addToQueue(trackId)],
     ['list', 'Add to playlist…', () => App.addToPlaylist(trackId)],
+    ...(App.downloadsSupported?.() ? [['download', App.isDownloaded(trackId) ? 'Remove download' : 'Download for offline', () => App.toggleDownload(trackId)]] : []),
     ['heart', liked ? 'Remove from liked songs' : 'Add to liked songs', () => App.toggleLike(trackId)],
     ['user', 'Go to artist', () => { location.hash = App.artistHash(t); }],
     ...(album ? [['disc', 'Go to album', () => { location.hash = album; }]] : []),
@@ -444,9 +446,8 @@ function syncThemeColor() {
 new MutationObserver(syncThemeColor).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
 syncThemeColor();
 
-/* ---------- notifications: bell + centre, phone notifications, new-release alerts ---------- */
-const NK = 'sonora-notifs', PK = 'sonora-notif-prefs', BK = 'sonora-notif-seen';
-let notifs = lsGet(NK, []); if (!Array.isArray(notifs)) notifs = [];
+/* ---------- phone notifications (no in-app bell / test button): new-release and sleep-timer alerts ---------- */
+const PK = 'sonora-notif-prefs', BK = 'sonora-notif-seen';
 let prefs = { release: true, sleep: true, quiet: false, ...lsGet(PK, {}) };
 const supportsNotif = () => 'Notification' in window;
 const perm = () => (supportsNotif() ? Notification.permission : 'unsupported');
@@ -454,37 +455,21 @@ const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.p
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const quietNow = () => { if (!prefs.quiet) return false; const h = new Date().getHours(); return h >= 22 || h < 8; };
 const prefOn = (k) => (k === 'quiet' ? !!prefs.quiet : prefs[k] !== false);
-const unread = () => notifs.filter((n) => !n.read).length;
-function ago(ts) {
-  const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
-  if (s < 60) return 'Just now'; if (s < 3600) return `${Math.floor(s / 60)} min ago`; if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
-}
-function updateBadge() {
-  const n = unread(), el = $('bellBadge');
-  if (el) { el.textContent = n > 9 ? '9+' : String(n); el.classList.toggle('hidden', n === 0); }
-  const bell = $('bellBtn'); if (bell) bell.setAttribute('aria-label', n ? `Notifications, ${n} unread` : 'Notifications');
-  try { if (n) navigator.setAppBadge?.(n); else navigator.clearAppBadge?.(); } catch { /* badge unsupported */ }
-}
+try { navigator.clearAppBadge?.(); } catch { /* badge unsupported */ }
 async function showSystem(n) {
   if (perm() !== 'granted') return false;
   const opts = { body: n.body, icon: 'public/icons/icon-192.png', badge: 'public/icons/icon-192.png', tag: `sonora-${n.type}`, renotify: true, data: { url: n.url || '#/home' } };
   if (n.image && /^https:/.test(n.image)) opts.image = n.image;
   try {
-    const reg = await navigator.serviceWorker?.getRegistration();
+    // wait for the service worker so the notification also shows when the app is in the background / installed on the phone
+    const reg = await Promise.race([navigator.serviceWorker?.ready, new Promise((r) => setTimeout(() => r(null), 3000))]);
     if (reg?.showNotification) { await reg.showNotification(n.title, opts); return true; }
     new Notification(n.title, opts); return true;
   } catch { return false; }
 }
-function addNotification(n) {
-  const item = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, ts: Date.now(), read: false, ...n };
-  notifs.unshift(item); notifs = notifs.slice(0, 50); lsSet(NK, notifs); updateBadge();
-  if (panel) renderPanel();
-  return item;
-}
 function notifyEvent(type, title, body, opts = {}) {
   if (prefs[type] === false) return;
-  const item = addNotification({ type, title, body, url: opts.url || '#/home', image: opts.image || '' });
+  const item = { type, title, body, url: opts.url || '#/home', image: opts.image || '' };
   if (document.hidden) { if (!quietNow()) showSystem(item); }
   else if (opts.toast !== false) App()?.notify(`${title}: ${body}`);
 }
@@ -493,84 +478,36 @@ async function enableNotifications() {
   if (isIOS() && !isStandalone()) { App()?.notify('On iPhone: tap Share › Add to Home Screen, open SONORA from there, then turn notifications on.'); return; }
   let res = perm();
   if (res === 'default') { try { res = await Notification.requestPermission(); } catch { res = perm(); } }
-  if (res === 'granted') {
-    const t = addNotification({ type: 'system', title: 'Notifications are on', body: 'You will get new releases and sleep-timer alerts here and on your phone.', url: '#/home', read: true });
-    updateBadge(); showSystem(t);
-  } else if (res === 'denied') App()?.notify('Notifications are blocked. Allow them for SONORA in your browser or phone settings.');
+  if (res === 'granted') showSystem({ type: 'system', title: 'Notifications are on', body: 'You will get new releases and sleep-timer alerts on this phone.', url: '#/home' });
+  else if (res === 'denied') App()?.notify('Notifications are blocked. Allow them for SONORA in your browser or phone settings.');
   refreshNotifUI();
 }
 
-/* bell panel (popover on desktop, bottom sheet on phones) */
-let panel = null, panelBackdrop = null;
-function renderPanel() {
-  if (!panel) return;
-  const ask = supportsNotif() && perm() === 'default';
-  panel.innerHTML = `<header class="np-head"><h2>Notifications</h2><div class="np-actions">${unread() ? '<button class="link" type="button" data-n="readall">Mark all read</button>' : ''}<button class="icon-btn" type="button" data-n="close" aria-label="Close notifications"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button></div></header>
-  ${ask ? '<div class="np-ask"><div><strong>Get alerts on your phone</strong><span>New releases and sleep-timer alerts, even when SONORA is in the background.</span></div><button class="btn btn-primary" type="button" data-n="enable">Turn on</button></div>' : ''}
-  ${notifs.length ? `<ul class="np-list">${notifs.map((n) => `<li><button type="button" class="np-item${n.read ? '' : ' unread'}" data-n="open" data-id="${n.id}"><span class="np-dot" aria-hidden="true"></span><span class="np-txt"><strong>${esc(n.title)}</strong><span>${esc(n.body)}</span></span><time>${ago(n.ts)}</time></button></li>`).join('')}</ul>` : '<div class="np-empty"><svg class="ic" aria-hidden="true"><use href="#i-bell"/></svg><strong>You’re all caught up</strong><span>New releases and alerts will show up here.</span></div>'}
-  <footer class="np-foot">${notifs.length ? '<button class="link" type="button" data-n="clear">Clear all</button>' : '<span></span>'}<a class="link" href="#/settings" data-n="settings">Notification settings</a></footer>`;
-}
-function openPanel() {
-  if (panel) { closePanel(); return; }
-  const sheet = matchMedia('(max-width:700px)').matches;
-  panelBackdrop = document.createElement('div'); panelBackdrop.className = 'ctx-backdrop' + (sheet ? ' sheet' : '');
-  panel = document.createElement('section'); panel.className = 'notif-panel glass' + (sheet ? ' sheet' : ''); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Notifications');
-  document.body.append(panelBackdrop, panel); renderPanel();
-  if (!sheet) { const r = $('bellBtn').getBoundingClientRect(); panel.style.top = `${Math.round(r.bottom + 10)}px`; panel.style.right = `${Math.max(12, Math.round(innerWidth - r.right - 8))}px`; }
-  panel.querySelector('button, a')?.focus({ preventScroll: true });
-  panelBackdrop.addEventListener('pointerdown', (e) => { e.preventDefault(); closePanel(); });
-  $('bellBtn').setAttribute('aria-expanded', 'true');
-  layerOpen('notifs', () => closePanel(true));
-}
-function closePanel(fromBack = false) {
-  if (!panel) return;
-  const p = panel, b = panelBackdrop; panel = panelBackdrop = null;
-  $('bellBtn')?.setAttribute('aria-expanded', 'false');
-  const done = () => { p.remove(); b?.remove(); };
-  if (canAnimate()) { p.classList.add('closing'); b?.classList.add('closing'); setTimeout(done, 160); } else done();
-  if (!fromBack) { layerClosed('notifs'); $('bellBtn')?.focus({ preventScroll: true }); }
-}
-function gotoFromPanel(url) { // navigate first, let the route change clear the history layer (avoids a back/forward race)
-  closePanel(true);
-  if (location.hash === url) layerClosed('notifs'); else location.hash = url;
-}
-$('bellBtn')?.addEventListener('click', openPanel);
-document.addEventListener('keydown', (e) => { if (panel && e.key === 'Escape') { e.preventDefault(); closePanel(); } });
-window.addEventListener('hashchange', () => closePanel(true));
-
-/* settings card + panel actions (delegated; the settings page re-renders often) */
+/* settings card (delegated; the settings page re-renders often) */
 function notifSettingsHTML() {
   const p = perm(); const ios = isIOS() && !isStandalone();
-  const status = !supportsNotif() ? 'This browser can’t show phone notifications. The bell inside SONORA still works.'
+  const status = !supportsNotif() ? 'This browser can’t show phone notifications.'
     : ios ? 'On iPhone, add SONORA to your Home Screen first (Share › Add to Home Screen), then turn notifications on from there.'
     : p === 'granted' ? 'Phone notifications are on.' : p === 'denied' ? 'Notifications are blocked. Allow them for SONORA in your browser or phone settings.' : 'Phone notifications are off.';
   const chip = (k, label) => `<button class="chip pref-chip" type="button" data-n="pref" data-k="${k}" aria-pressed="${prefOn(k)}">${label}</button>`;
-  return `<div class="settings-subhead notif-subhead"><div><h3>Notifications</h3><p>The lock-screen player (artwork, play, previous, next, seek bar) is always on while music plays. Alerts appear in the bell and, if allowed, as phone notifications.</p></div></div>
-  <div class="notif-status" data-state="${p}"><span>${status}</span><div class="notif-btns">${supportsNotif() && p !== 'granted' && p !== 'denied' ? '<button class="btn btn-primary" type="button" data-n="enable">Turn on notifications</button>' : ''}${p === 'granted' ? '<button class="btn btn-glass" type="button" data-n="test">Send a test</button>' : ''}</div></div>
+  return `<div class="settings-subhead notif-subhead"><div><h3>Notifications</h3><p>New releases and sleep-timer alerts are sent as notifications on your phone. The lock-screen player (artwork, play, previous, next, seek bar) is always on while music plays.</p></div></div>
+  <div class="notif-status" data-state="${p}"><span>${status}</span><div class="notif-btns">${supportsNotif() && p !== 'granted' && p !== 'denied' ? '<button class="btn btn-primary" type="button" data-n="enable">Turn on notifications</button>' : ''}</div></div>
   <div class="motion-options notif-prefs" role="group" aria-label="Alert types">${chip('release', 'New releases')}${chip('sleep', 'Sleep timer')}${chip('quiet', 'Quiet hours 10pm–8am')}</div>`;
 }
-function refreshNotifUI() { const el = $('notifSettings'); if (el) el.innerHTML = notifSettingsHTML(); renderPanel(); }
+function refreshNotifUI() { const el = $('notifSettings'); if (el) el.innerHTML = notifSettingsHTML(); }
 new MutationObserver(() => { const el = $('notifSettings'); if (el && !el.firstChild) el.innerHTML = notifSettingsHTML(); }).observe($('view') || document.body, { childList: true, subtree: true });
 document.addEventListener('click', (e) => {
   const b = e.target.closest?.('[data-n]'); if (!b) return;
   const act = b.dataset.n;
   if (act === 'enable') { e.preventDefault(); enableNotifications(); }
-  else if (act === 'test') { e.preventDefault(); const t = addNotification({ type: 'system', title: 'Test notification', body: 'This is how SONORA alerts will look on your phone.', url: '#/home' }); showSystem(t); }
   else if (act === 'pref') { const k = b.dataset.k; prefs[k] = !prefOn(k); lsSet(PK, prefs); b.setAttribute('aria-pressed', String(prefOn(k))); }
-  else if (act === 'readall') { notifs.forEach((n) => { n.read = true; }); lsSet(NK, notifs); updateBadge(); renderPanel(); }
-  else if (act === 'clear') { notifs = []; lsSet(NK, notifs); updateBadge(); renderPanel(); }
-  else if (act === 'close') closePanel();
-  else if (act === 'settings') { e.preventDefault(); gotoFromPanel('#/settings'); }
-  else if (act === 'open') {
-    const n = notifs.find((x) => x.id === b.dataset.id); if (!n) return;
-    n.read = true; lsSet(NK, notifs); updateBadge(); gotoFromPanel(n.url || '#/home');
-  }
 });
 navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.type === 'sonora-open') location.hash = String(e.data.url || '#/home').replace(/^.*#/, '#'); });
 
 /* new-release alerts: checked while the app is open or playing in the background */
 let lastCheck = 0;
 async function checkReleases() {
+  if (navigator.onLine === false) return;
   const app = App(); if (!app?.cloud?.() || !app.fetchLatest) return;
   lastCheck = Date.now();
   let rows = []; try { rows = await app.fetchLatest(); } catch { return; }
@@ -589,7 +526,6 @@ async function checkReleases() {
 setTimeout(checkReleases, 5000);
 setInterval(() => { if (Date.now() - lastCheck > 7 * 60 * 1000) checkReleases(); }, 60 * 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastCheck > 2 * 60 * 1000) checkReleases(); });
-updateBadge();
 
 /* ---------------- phone: shorter search placeholder so it is not cut off ---------------- */
 (() => {

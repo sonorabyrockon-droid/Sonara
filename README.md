@@ -22,7 +22,7 @@ The admin console includes:
 - Track catalogue listing, metadata editing, unpublishing and permanent deletion (including the matching R2 object)
 - Supabase Auth, Supabase Data API and R2 connection health checks
 - Catalogue counts, scanned R2 object count/bytes and recent admin audit events
-- Upload safety ceiling: 500 tracks per administrator per hour (only successful uploads count; override with an optional `UPLOADS_PER_HOUR` Worker variable)
+- Uploads: no hourly limit for the administrator (set the optional `UPLOADS_PER_HOUR` Worker variable only if you want a cap)
 - Worker health and runtime metrics links/instructions
 
 Cloudflare CPU time, requests, error rate and invocation logs remain in the Cloudflare dashboard. The admin console checks service reachability; it cannot guarantee there will never be an external outage.

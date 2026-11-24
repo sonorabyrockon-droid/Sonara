@@ -21,13 +21,12 @@
  * Required Worker secret:
  *   SUPABASE_SECRET_KEY (sb_secret_...; never put in GitHub or the browser)
  */
-const VERSION = '3.22.0';
+const VERSION = '3.28.0';
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const MAX_TRACKS_RETURNED = 250;
-// Safety ceiling only. The old limit of 12 blocked normal batch uploads (and counted failed attempts).
-// Override without code changes via an optional UPLOADS_PER_HOUR Worker variable.
-const DEFAULT_UPLOADS_PER_HOUR = 500;
-const uploadsPerHour = (env) => { const n = Number(env?.UPLOADS_PER_HOUR); return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_UPLOADS_PER_HOUR; };
+// No upload limit by default (admin only). A cap is applied ONLY if an optional UPLOADS_PER_HOUR Worker variable
+// is set to a positive number. If your Cloudflare dashboard still has UPLOADS_PER_HOUR = 12, delete that variable.
+const uploadsPerHour = (env) => { const n = Number(env?.UPLOADS_PER_HOUR); return Number.isFinite(n) && n > 0 ? Math.floor(n) : Infinity; };
 const AUDIO_TYPES = {
   mp3: 'audio/mpeg',
   m4a: 'audio/mp4',
@@ -200,6 +199,7 @@ async function writeAudit(env, user, action, details = {}) {
   }
 }
 async function enforceUploadRate(env, user) {
+  if (!Number.isFinite(uploadsPerHour(env))) return true; // unlimited: skip the counting query entirely
   // Check only. The upload is recorded AFTER it succeeds (recordUpload), so failed,
   // duplicate-blocked or rolled-back attempts never consume the hourly allowance.
   const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();

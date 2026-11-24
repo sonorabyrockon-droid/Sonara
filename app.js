@@ -115,17 +115,40 @@ function mapRow(r) {
     duration:Number(r.duration_seconds) || 0, coverUrl:safeUrl(r.cover_url || ''), audioKey:r.audio_key||'', fileSize:Number(r.file_size)||0, createdAt:r.created_at||'',
     audioUrl: r.audio_key ? streamUrl(r.audio_key) : safeUrl(r.audio_url || '') };
 }
+let offlineCatalogue = false;
+function mapOffline(r) {
+  return { id:r.id, title:r.title || 'Untitled', artist:r.artist || 'Unknown artist', album:r.album || 'Single', genre:r.genre || 'Other', description:r.description || '',
+    duration:Number(r.duration) || 0, coverUrl:r.coverUrl || '', audioKey:'', fileSize:Number(r.size) || 0, createdAt:r.createdAt || '', audioUrl:'' };
+}
+/* No connection (or the catalogue request failed): run from the encrypted downloads so the app still works. */
+async function useOfflineCatalogue(reason) {
+  await (OFF()?.ready);
+  const saved = (await OFF()?.list?.()) || [];
+  if (!saved.length) return false;
+  if (!tracks.length || offlineCatalogue) tracks = saved.map(mapOffline);
+  offlineCatalogue = true; loadError = false;
+  notify(reason || 'You are offline — showing your downloaded songs.');
+  return true;
+}
 async function loadCatalogue({ renderAfter = true } = {}) {
-  if (!sb) { loaded = true; return; }
+  if (!sb || navigator.onLine === false) {
+    loaded = true;
+    if (navigator.onLine === false) await useOfflineCatalogue();
+    restoreLast(); if (renderAfter) render(); return;
+  }
   const { data, error } = await sb.from('tracks')
     .select('id,title,artist,album,genre,description,duration_seconds,audio_key,audio_url,cover_url,created_at')
     .eq('status', 'published').order('created_at', { ascending:false }).limit(500);
   loaded = true; loadError = Boolean(error);
-  if (error) { console.error('Catalogue:', error); notify(`Could not load music: ${error.message || 'Supabase query failed'}`); }
-  else tracks = (data || []).map(mapRow);
+  if (error) {
+    console.error('Catalogue:', error);
+    if (!(await useOfflineCatalogue('Could not reach SONORA — showing your downloaded songs.'))) notify(`Could not load music: ${error.message || 'Supabase query failed'}`);
+  } else { tracks = (data || []).map(mapRow); offlineCatalogue = false; }
   restoreLast();
   if (renderAfter) render();
 }
+window.addEventListener('online', () => { if (sb) { loadCatalogue().then(() => { if (user) loadLibrary(); }); } });
+window.addEventListener('offline', () => { if (sb) notify('You are offline. Downloaded songs still play.'); });
 async function loadLibrary() {
   if (!isCloudUser()) {
     liked = new Set(store.get('sonora-liked', [])); playlists = store.get('sonora-playlists', []); render(); return;
@@ -134,10 +157,14 @@ async function loadLibrary() {
     sb.from('likes').select('track_id'),
     sb.from('playlists').select('id,name,created_at,updated_at,playlist_tracks(track_id,position)').order('created_at', { ascending:false })
   ]);
-  if (l.error || p.error) notify('Could not sync your library. Check your connection.');
+  if (l.error || p.error) {
+    notify('Could not sync your library. Check your connection.');
+    if (!liked.size && !playlists.length) { liked = new Set(store.get('sonora-cache-liked', [])); playlists = store.get('sonora-cache-playlists', []); render(); }
+  }
   if (!l.error) liked = new Set(l.data.map((r) => r.track_id));
   if (!p.error) playlists = p.data.map((r) => ({ id:r.id, name:r.name, updatedAt:r.updated_at || r.created_at || '',
     ids:(r.playlist_tracks || []).sort((a, b) => a.position - b.position).map((x) => x.track_id) }));
+  if (!l.error && !p.error) { store.set('sonora-cache-liked', [...liked]); store.set('sonora-cache-playlists', playlists); }
   render();
 }
 const saveGuest = () => { store.set('sonora-liked', [...liked]); store.set('sonora-playlists', playlists); };
@@ -153,15 +180,68 @@ function row(t, i, ctx, opts = {}) {
     ? `<button class="icon-btn" data-act="remove" aria-label="Remove from playlist">${ic('x')}</button>`
     : `<button class="icon-btn" data-act="add" aria-label="Add to playlist">${ic('plus')}</button>`;
   const queueAct = `<button class="icon-btn queue-add-btn" data-act="queue-add" aria-label="Add ${esc(t.title)} to queue" title="Add to queue">${ic('queue')}</button>`;
+  const dlAct = downloadButton(t);
   return `<div class="row${on ? ' active' : ''}${on && !audio.paused ? ' playing' : ''}" tabindex="0" data-id="${esc(t.id)}" data-ctx="${esc(ctx)}" aria-label="Play ${esc(t.title)} by ${esc(t.artist)}">
     <div class="num"><span>${i + 1}</span><div class="eq" aria-hidden="true"><i></i><i></i><i></i></div></div>
     ${cover(t)}
     <div style="min-width:0"><span class="name">${esc(t.title)}</span><span class="by artist-link" role="link" tabindex="0" data-act="open-artist" data-artist="${esc(artistKey(t.artist))}">${esc(t.artist)}</span></div>
     <span class="alb">${esc(t.album)}</span><span class="dur">${t.duration ? fmt(t.duration) : ''}</span>
-    ${queueAct}${act}
+    ${queueAct}${dlAct}${act}
     <button class="icon-btn like${lk ? ' on' : ''}" data-act="like" aria-pressed="${lk}" aria-label="${lk ? 'Unlike' : 'Like'} ${esc(t.title)}">${ic(lk ? 'heart-fill' : 'heart')}</button></div>`;
 }
 const rows = (list, ctx, opts) => `<div class="rows" data-ctx="${esc(ctx)}">${list.map((t, i) => row(t, i, ctx, opts)).join('')}</div>`;
+
+/* ---------- offline downloads (encrypted; see sonora-offline.js) ---------- */
+const OFF = () => window.SonoraOffline;
+const offlineOK = () => Boolean(OFF()?.supported);
+function dlState(id) { const o = OFF(); if (!o) return 'none'; if (o.isBusy(id)) return 'busy'; return o.has(id) ? 'done' : 'idle'; }
+function downloadButton(t, cls = 'icon-btn dl-btn') {
+  if (!offlineOK()) return '';
+  const st = dlState(t.id), pct = OFF().progress(t.id);
+  const label = st === 'done' ? `Remove download of ${t.title}` : st === 'busy' ? `Cancel download of ${t.title}` : `Download ${t.title} for offline listening`;
+  const inner = st === 'done' ? ic('downloaded') : st === 'busy' ? `<span class="dl-pct">${pct ? pct : '…'}</span>` : ic('download');
+  return `<button class="${cls}" data-act="download" data-dl="${st}" aria-label="${esc(label)}" title="${esc(label)}">${inner}</button>`;
+}
+async function toggleDownload(id) {
+  const t = byId(id), o = OFF(); if (!t || !o) return;
+  const st = dlState(id);
+  try {
+    if (st === 'busy') { o.cancel(id); return; }
+    if (st === 'done') { await o.remove(id); notify(`Removed “${t.title}” from downloads.`); if (route().name === 'downloads') render(); return; }
+    notify(`Downloading “${t.title}”…`);
+    await o.save(t);
+    notify(`“${t.title}” is saved for offline listening.`);
+  } catch (e) { if (!e?.cancelled) notify(e?.message || 'Download failed. Try again.'); }
+}
+async function downloadMany(list) {
+  const o = OFF(); if (!o) return;
+  const todo = list.filter((t) => t.audioUrl && !o.has(t.id) && !o.isBusy(t.id));
+  if (!todo.length) { notify(list.length ? 'Everything here is already downloaded.' : 'Nothing to download.'); return; }
+  notify(`Downloading ${todo.length} ${todo.length === 1 ? 'song' : 'songs'}…`);
+  let ok = 0, fail = '';
+  for (const t of todo) { try { await o.save(t); ok++; } catch (e) { if (e?.cancelled) continue; fail = e?.message || 'Download failed.'; if (/storage|offline/i.test(fail)) break; } }
+  notify(fail && !ok ? fail : `Downloaded ${ok} of ${todo.length} ${todo.length === 1 ? 'song' : 'songs'}${fail ? ` — ${fail}` : '.'}`);
+}
+const dlAllButton = (ctx) => offlineOK() ? `<button class="btn btn-glass" data-act="download-ctx" data-ctx="${esc(ctx)}">${ic('download')}Download all</button>` : '';
+/* Live updates without re-rendering the page (progress ticks several times a second). */
+function paintDownloads(id) {
+  qsa('.row[data-id] .dl-btn').forEach((b) => {
+    const rid = b.closest('.row').dataset.id; if (id && rid !== id) return;
+    const tr = byId(rid); if (tr) b.outerHTML = downloadButton(tr);
+  });
+  if (!id || active?.id === id) syncDownloadControl();
+  if (id && !OFF().isBusy(id) && route().name === 'downloads') render();
+}
+function syncDownloadControl() {
+  const b = $('expandedDownload'); if (!b) return;
+  if (!offlineOK() || !active) { b.classList.add('hidden'); return; }
+  b.classList.remove('hidden');
+  const st = dlState(active.id), pct = OFF().progress(active.id);
+  b.dataset.dl = st;
+  b.innerHTML = st === 'done' ? ic('downloaded') : st === 'busy' ? `<span class="dl-pct">${pct ? pct : '…'}</span>` : ic('download');
+  const label = st === 'done' ? 'Remove download' : st === 'busy' ? 'Cancel download' : 'Download for offline listening';
+  b.setAttribute('aria-label', label); b.title = label;
+}
 function card(t, ctx) {
   return `<button class="card" data-act="playcard" data-id="${esc(t.id)}" data-ctx="${esc(ctx)}" aria-label="Play ${esc(t.title)} by ${esc(t.artist)}">${cover(t)}<span class="fab">${ic('play')}</span><span class="t">${esc(t.title)}</span><span class="s">${esc(t.artist)}</span></button>`;
 }
@@ -285,6 +365,7 @@ const ctxList = (ctx) => {
   if (ctx.startsWith('artist:')) return artistTracks(ctx.slice(7));
   if (ctx.startsWith('plv:')) return playlistView(ctx.slice(4));
   if (ctx === 'liked') return tracks.filter((t) => liked.has(t.id));
+  if (ctx === 'downloads') return tracks.filter((t) => OFF()?.has(t.id));
   if (ctx === 'search') return filtered();
   if (ctx.startsWith('pl:')) return (playlistById(ctx.slice(3))?.ids || []).map(byId).filter(Boolean);
   if (ctx.startsWith('album:')) return (albumById(ctx.slice(6))?.tracks || []);
@@ -1337,7 +1418,7 @@ const views = {
     return `<div class="page library-page"><div class="kicker">YOUR LIBRARY</div><h1>Liked songs</h1><p class="lede">${isCloudUser() ? 'Your saved music, synced to your SONORA account.' : 'Your favourites are saved on this device. Sign in to sync across devices.'}</p>
     <section class="library-hero liked-hero">
       <div class="liked-art">${ic('heart-fill')}</div><div class="library-hero-copy"><span class="kicker">PLAYLIST</span><h2>Liked songs</h2><p>${list.length.toLocaleString()} ${list.length === 1 ? 'song' : 'songs'} · ${isCloudUser() ? 'Synced library' : 'This device'}</p>
-      <div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="liked" ${list.length ? '' : 'disabled'}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="liked" ${list.length ? '' : 'disabled'}>${ic('shuffle')}Shuffle</button></div></div>
+      <div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="liked" ${list.length ? '' : 'disabled'}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="liked" ${list.length ? '' : 'disabled'}>${ic('shuffle')}Shuffle</button>${list.length ? dlAllButton('liked') : ''}</div></div>
     </section>
     ${list.length ? `<div class="sec-head"><div><h2>Saved tracks</h2><p>Most recently added to your liked songs.</p></div></div>${rows(list, 'liked')}` : empty('No liked songs yet', 'Tap the heart beside any track to save it here.')}</div>`;
   },
@@ -1345,6 +1426,7 @@ const views = {
     return `<div class="page library-page"><div class="library-heading"><div><div class="kicker">YOUR LIBRARY</div><h1>Playlists</h1><p class="lede">Your music, organised around every mood and moment.</p></div><button class="btn btn-primary" data-act="newpl">${ic('plus')}Create playlist</button></div>
     <div class="grid collection-grid">
       <a class="card collection-card liked-collection" href="#/liked" style="text-decoration:none;color:inherit">${collectionArtwork(ctxList('liked'), 'Liked songs')}<span class="t">Liked songs</span><span class="s">${liked.size.toLocaleString()} saved songs</span></a>
+      ${offlineOK() ? `<a class="card collection-card liked-collection" href="#/downloads" style="text-decoration:none;color:inherit">${collectionArtwork(ctxList('downloads'), 'Downloads')}<span class="t">Downloads</span><span class="s">${ctxList('downloads').length} offline ${ctxList('downloads').length === 1 ? 'song' : 'songs'}</span></a>` : ''}
       <button class="card new" data-act="newpl">${ic('plus')}<strong>New playlist</strong><span class="s">Start a new collection</span></button>
       ${playlists.map((p) => { const list=p.ids.map(byId).filter(Boolean); return `<a class="card collection-card" href="#/playlist/${encodeURIComponent(p.id)}" style="text-decoration:none;color:inherit">${albumArtwork(list, p.name)}<span class="t">${esc(p.name)}</span><span class="s">${list.length} ${list.length === 1 ? 'song' : 'songs'} · Playlist</span></a>`; }).join('')}
     </div></div>`;
@@ -1356,10 +1438,18 @@ const views = {
     const list = ctxList(`pl:${id}`), total = fmtTotal(list), ctx = `pl:${id}`;
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' }) : '';
     const dis = list.length ? '' : 'disabled';
-    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(list, p.name)}<div class="collection-hero-copy"><span class="kicker">PLAYLIST</span><h1>${esc(p.name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'song' : 'songs'}${total ? ` · ${total}` : ''}${updated ? ` · Updated ${esc(updated)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}" ${dis}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}" ${dis}>${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}" ${dis}>Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}" ${dis}>${ic('queue')}Add to queue</button><button class="btn btn-glass" data-act="rename-pl" data-id="${esc(id)}">Rename</button><button class="btn btn-glass" data-act="dup-pl" data-id="${esc(id)}">Duplicate</button><button class="btn btn-glass" data-act="delpl" data-id="${esc(id)}">${ic('trash')}Delete</button></div></div></section>
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(list, p.name)}<div class="collection-hero-copy"><span class="kicker">PLAYLIST</span><h1>${esc(p.name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'song' : 'songs'}${total ? ` · ${total}` : ''}${updated ? ` · Updated ${esc(updated)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}" ${dis}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}" ${dis}>${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}" ${dis}>Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}" ${dis}>${ic('queue')}Add to queue</button>${list.length ? dlAllButton(ctx) : ''}<button class="btn btn-glass" data-act="rename-pl" data-id="${esc(id)}">Rename</button><button class="btn btn-glass" data-act="dup-pl" data-id="${esc(id)}">Duplicate</button><button class="btn btn-glass" data-act="delpl" data-id="${esc(id)}">${ic('trash')}Delete</button></div></div></section>
     <div class="sec-head"><div><h2>Tracks</h2><p>Use the heart to save favourites, or + to add them to another playlist.</p></div></div>
     ${list.length > 1 ? `<div class="pl-tools"><input class="input" id="plSearch" type="search" placeholder="Search this playlist" value="${esc(plView.q)}" aria-label="Search this playlist"><select class="input" id="plSort" aria-label="Sort playlist">${[['order','Playlist order'],['title','Title A–Z'],['artist','Artist A–Z'],['duration','Longest first']].map(([v, l]) => `<option value="${v}" ${plView.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}
     <div id="playlistRows">${playlistRowsHtml(id)}</div></div>`;
+  },
+  downloads() {
+    const list = ctxList('downloads'), dis = list.length ? '' : 'disabled';
+    setTimeout(() => OFF()?.usage().then((u) => { const el = $('dlUsage'); if (el) el.textContent = `${u.count} ${u.count === 1 ? 'song' : 'songs'} · ${(u.bytes / 1048576).toFixed(1)} MB on this device`; }), 0);
+    return `<div class="page library-page"><div class="kicker">YOUR LIBRARY</div><h1>Downloads</h1><p class="lede">Songs saved on this device, encrypted so they only play inside SONORA. They keep working with no or weak internet.</p>
+    <section class="library-hero liked-hero"><div class="liked-art">${ic('downloaded')}</div><div class="library-hero-copy"><span class="kicker">OFFLINE</span><h2>Downloaded songs</h2><p id="dlUsage">${list.length} ${list.length === 1 ? 'song' : 'songs'}</p>
+      <div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="downloads" ${dis}>${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="downloads" ${dis}>${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="remove-all-downloads" ${dis}>${ic('trash')}Remove all</button></div></div></section>
+    ${list.length ? `<div class="sec-head"><div><h2>On this device</h2><p>Tap the check beside a song to remove its download.</p></div></div>${rows(list, 'downloads')}` : empty('No downloads yet', offlineOK() ? 'Tap the download icon beside any song to save it for offline listening.' : 'This browser cannot store songs offline.')}</div>`;
   },
   albums() {
     const albums = albumEntries();
@@ -1372,7 +1462,7 @@ const views = {
     const ctx = `album:${album.id}`, n = album.tracks.length, total = fmtTotal(album.tracks);
     const genresOf = [...new Set(album.tracks.map((t) => t.genre).filter(Boolean))].slice(0, 3).join(', ');
     const allLiked = album.tracks.every((t) => liked.has(t.id));
-    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artistLinks(album.tracks)} · ${n} ${n === 1 ? 'track' : 'tracks'}${total ? ` · ${total}` : ''}${genresOf ? ` · ${esc(genresOf)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}">Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}">${ic('queue')}Add to queue</button><button class="btn btn-glass" data-act="album-playlist" data-album-id="${esc(album.id)}">${ic('plus')}Add to playlist</button><button class="btn btn-glass" data-act="album-like" data-album-id="${esc(album.id)}" aria-pressed="${allLiked}">${ic(allLiked ? 'heart-fill' : 'heart')}${allLiked ? 'Unlike album' : 'Like album'}</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artistLinks(album.tracks)} · ${n} ${n === 1 ? 'track' : 'tracks'}${total ? ` · ${total}` : ''}${genresOf ? ` · ${esc(genresOf)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}">Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}">${ic('queue')}Add to queue</button>${dlAllButton(ctx)}<button class="btn btn-glass" data-act="album-playlist" data-album-id="${esc(album.id)}">${ic('plus')}Add to playlist</button><button class="btn btn-glass" data-act="album-like" data-album-id="${esc(album.id)}" aria-pressed="${allLiked}">${ic(allLiked ? 'heart-fill' : 'heart')}${allLiked ? 'Unlike album' : 'Like album'}</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
       <div class="sec-head"><div><h2>Track list</h2><p>All catalogue tracks recognised as part of this album.</p></div></div>${rows(album.tracks, ctx)}</div>`;
   },
   artist(id) {
@@ -1477,7 +1567,7 @@ const views = {
             <div class="sonora-upload-progress-bottom"><span id="sonoraUploadDetail">Waiting to upload</span><span id="sonoraUploadSpeed"></span></div>
           </div>
           <div class="admin-cover-preview-wrap"><img id="adminCoverPreview" class="admin-cover-preview hidden" alt="Detected album artwork preview"></div>
-          <div class="upload-foot"><p class="muted">Only upload recordings you own or are licensed to distribute. The service rejects non-audio extensions and enforces upload rate limits.</p><button class="btn btn-primary" id="adminUploadBtn" type="submit">${ic('plus')}Upload and publish</button></div>
+          <div class="upload-foot"><p class="muted">Only upload recordings you own or are licensed to distribute. The service rejects non-audio extensions.</p><button class="btn btn-primary" id="adminUploadBtn" type="submit">${ic('plus')}Upload and publish</button></div>
         </form>
       </section>
       <section class="admin-section glass"><div class="section-top"><div><h2>Music catalogue</h2><p>Search, edit, unpublish or permanently delete a track and its R2 object.</p></div><span class="muted" id="adminCatalogCount">Latest 250 records</span></div><div class="catalog-search"><span>⌕</span><input class="input" id="adminCatalogSearch" type="search" value="${esc(adminCatalogQuery)}" placeholder="Search title, artist, album, genre or description…" aria-label="Search music catalogue"></div><div class="admin-track-list" id="adminTracks"><p class="muted">Loading catalogue…</p></div></section>
@@ -1586,11 +1676,31 @@ function setActive(t) {
   $('npTitle').textContent = t.title; $('npArtist').textContent = t.artist;
   updateCoverElement($('npCover'),t);
   $('dur').textContent = fmt(t.duration); $('cur').textContent = '0:00'; setSeek(0);
-  store.set('sonora-last', t.id); syncLike();syncExpandedPlayer();renderExpandedQueue();window.SonoraUX?.trackChanged(t);
+  store.set('sonora-last', t.id); syncLike();syncExpandedPlayer();syncDownloadControl();renderExpandedQueue();window.SonoraUX?.trackChanged(t);
   if ('mediaSession' in navigator && window.MediaMetadata) navigator.mediaSession.metadata = new MediaMetadata({ title:t.title, artist:t.artist, album:t.album||'SONORA', artwork:(window.SonoraUX?.artworkFor?.(t)) || (t.coverUrl?[{src:t.coverUrl,sizes:'512x512'}]:[]) });
 }
+let offlineBlobUrl = '', loadToken = 0;
+const releaseBlob = () => { if (offlineBlobUrl) { URL.revokeObjectURL(offlineBlobUrl); offlineBlobUrl = ''; } };
 function load(t, autoplay) {
   setActive(t);
+  const token = ++loadToken;
+  if (OFF()?.has(t.id)) { // downloaded copy: decrypted in memory, plays with no network
+    audio.pause();
+    if (!autoplay) { audio.removeAttribute('src'); audio.load(); syncPlaying(); return; } // decrypt lazily, only when the user presses play
+    OFF().objectUrl(t.id).then((url) => {
+      if (token !== loadToken) { URL.revokeObjectURL(url); return; }
+      releaseBlob(); offlineBlobUrl = url; audio.src = url;
+      if (autoplay) audio.play().catch((e) => { if (e.name !== 'AbortError') notify('Could not start playback. Tap play to try again.'); });
+      syncPlaying();
+    }).catch((e) => {
+      if (token !== loadToken) return;
+      console.warn('Offline copy unreadable:', e);
+      OFF().remove(t.id).catch(() => {}); notify('This download could not be read, so it was removed. Download it again.');
+      if (t.audioUrl && navigator.onLine !== false) load(t, autoplay);
+    });
+    return;
+  }
+  releaseBlob();
   if (!t.audioUrl) { audio.removeAttribute('src'); audio.load(); syncPlaying(); if (autoplay) notify('This track has no playable audio URL. Check the track metadata and Worker configuration in Music & Audience Intelligence.'); return; }
   if (audio.src !== t.audioUrl) audio.src = t.audioUrl;
   if (autoplay) audio.play().catch((e) => { if (e.name !== 'AbortError') notify('Could not start playback. Tap play to try again.'); });
@@ -1713,7 +1823,7 @@ window.addEventListener('online', () => { if (sb && !livePresenceReady && livePr
 audio.addEventListener('waiting', () => $('play').classList.add('loading'));
 ['playing', 'canplay', 'pause', 'error'].forEach((e) => audio.addEventListener(e, () => $('play').classList.remove('loading')));
 audio.addEventListener('ended', () => { if (sleepAtEnd) { sleepAtEnd = false; $('sleepTimer').value = '0'; { notify('Sleep timer: playback stopped.'); window.SonoraUX?.notifyEvent?.('sleep','Sleep timer','Playback stopped. Sleep well.',{toast:false}); } return; } if (repeatMode === 'all' || userPreferences.autoplay_next !== false) step(1, true); });
-audio.addEventListener('error', () => { if (audio.src && active) notify('This track could not be streamed. Check that your Worker is deployed and the file exists in R2.'); });
+audio.addEventListener('error', () => { if (audio.src && active) notify(navigator.onLine === false || !OFF()?.has(active.id) && offlineCatalogue ? 'No connection. Download songs while online to play them offline.' : 'This track could not be streamed. Check your connection — or download it to play without internet.'); });
 $('seek').addEventListener('input', (e) => { const p = e.target.value / 1000; e.target.style.setProperty('--p', `${p * 100}%`); if (audio.duration) audio.currentTime = audio.duration * p; });
 $('expandedSeek').addEventListener('input', (e) => { const p=e.target.value/1000;e.target.style.setProperty('--p',`${p*100}%`);if(audio.duration)audio.currentTime=audio.duration*p;$('expandedCur').textContent=fmt(audio.currentTime); });
 const setVol = (v) => { audio.volume = v / 100; $('vol').style.setProperty('--p', `${v}%`); setIcon($('muteBtn'), v === 0 || audio.muted ? 'mute' : 'volume'); };
@@ -2001,6 +2111,9 @@ $('view').addEventListener('click', (e) => {
       case 'add': addDialog(id); break;
       case 'remove': removeFromPlaylist(route().id && decodeURIComponent(route().id), id); break;
       case 'playcard': play(id, ctx); break;
+      case 'download': e.stopPropagation(); toggleDownload(id); break;
+      case 'download-ctx': downloadMany(ctxList(ctx)); break;
+      case 'remove-all-downloads': if (confirm('Remove all downloaded songs from this device?')) OFF().removeAll().then(() => { notify('All downloads removed.'); render(); }); break;
       case 'playctx': playContext(ctx, false); break;
       case 'playctx-shuffle': playContext(ctx, true); break;
       case 'genre': genre = genre === a.dataset.genre && route().name === 'search' ? 'All' : a.dataset.genre; if (route().name === 'search') render(); else location.hash = '#/search'; break;
@@ -2331,7 +2444,7 @@ async function init() {
   store.set('sonora-liked', [...liked]);
   store.set('sonora-playlists', playlists);
   render(); refreshAccount();
-  if (!cloud) { if (!store.get('sonora-guest', false)) showAuth('signin'); return; }
+  if (!cloud) { if (!store.get('sonora-guest', false) && navigator.onLine !== false) showAuth('signin'); await loadCatalogue(); return; }
   sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_ANON_KEY, { auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:'pkce' } });
   let session = null;
   try {
@@ -2350,7 +2463,7 @@ async function init() {
   // Start presence only after Supabase has restored the current auth state/JWT.
   startLivePresence();
   if (!livePresenceHeartbeatTimer) livePresenceHeartbeatTimer = window.setInterval(async () => { if (livePresenceReady) { await publishLivePresence(); readLivePresenceSnapshot(); if (['admin','diagnostics'].includes(route().name)) renderLivePresence(); } }, 15000);
-  if (!user && !store.get('sonora-guest', false)) showAuth('signin');
+  if (!user && !store.get('sonora-guest', false) && navigator.onLine !== false) showAuth('signin');
   await loadCatalogue();
   if (!user) await loadLibrary();
 }
@@ -2371,7 +2484,13 @@ window.SonoraApp = {
   addToPlaylist: (id) => addDialog(id),
   artistHash: (t) => `#/artist/${encodeURIComponent(artistKey(t.artist))}`,
   albumHash: (t) => { const k = albumGroupKey(String(t.album || '').trim()); return k && albumEntries().some((a) => a.id === k) ? `#/album/${encodeURIComponent(k)}` : ''; },
-  notify: (m) => notify(m)
+  notify: (m) => notify(m),
+  isDownloaded: (id) => Boolean(OFF()?.has(id)),
+  downloadsSupported: () => offlineOK(),
+  toggleDownload: (id) => toggleDownload(id)
 };
+OFF()?.onChange((id) => paintDownloads(id));
+OFF()?.ready.then(() => { render(); syncDownloadControl(); });
+$('expandedDownload')?.addEventListener('click', () => active && toggleDownload(active.id));
 init();
 })();

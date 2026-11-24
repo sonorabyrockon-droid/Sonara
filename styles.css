@@ -134,12 +134,15 @@ main{min-width:0}
 
 /* rows */
 .rows{display:grid;gap:4px}
-.row{display:grid;grid-template-columns:48px 52px minmax(0,1fr) minmax(0,.7fr) 52px 38px 38px 38px;align-items:center;gap:12px;padding:8px 12px 8px 6px;border-radius:var(--r-sm);transition:background .15s;cursor:pointer}
+.row{display:grid;grid-template-columns:48px 52px minmax(0,1fr) minmax(0,.7fr) 52px 38px 38px 38px 38px;align-items:center;gap:12px;padding:8px 12px 8px 6px;border-radius:var(--r-sm);transition:background .15s;cursor:pointer}
 .row:hover,.row:focus-visible{background:var(--glass2)}
 .row .num{display:grid;place-items:center;color:var(--muted);font-size:14px;height:40px}
 .row .cover{border-radius:9px}.row .cover b{font-size:20px}.row .cover::before{display:none}
 .row .name{display:block;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .by,.row .alb{display:block;color:var(--muted);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Only the artist's own name is the link. Tapping the title (or anywhere else on the row) plays the song. */
+.row .by.artist-link{width:fit-content;max-width:100%;margin-top:3px;padding:2px 0}
+.row .name{padding:3px 0}
 .row .dur{color:var(--muted);font-size:13.5px;text-align:right}
 .row.active .name{color:var(--accent)}
 .row .icon-btn{width:38px;height:38px}
@@ -188,7 +191,7 @@ dialog::backdrop{background:rgba(8,5,20,.5);backdrop-filter:blur(6px)}
 .toast{position:fixed;z-index:80;left:50%;bottom:130px;transform:translate(-50%,10px);opacity:0;pointer-events:none;max-width:calc(100% - 32px);padding:12px 20px;border-radius:999px;font-weight:600;transition:.2s}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 
-@media(max-width:1100px){.row{grid-template-columns:48px 52px minmax(0,1fr) 52px 36px 36px 36px}.row .alb{display:none}.app{grid-template-columns:220px minmax(0,1fr)}}
+@media(max-width:1100px){.row{grid-template-columns:48px 52px minmax(0,1fr) 52px 36px 36px 36px 36px}.row .alb{display:none}.app{grid-template-columns:220px minmax(0,1fr)}}
 @media(max-width:860px){
   .auth{grid-template-columns:1fr;gap:28px}.auth-copy .brand{margin-bottom:24px}
   .app{display:block;padding:10px 10px 190px}
@@ -202,7 +205,7 @@ dialog::backdrop{background:rgba(8,5,20,.5);backdrop-filter:blur(6px)}
   .tabbar a[aria-current=page]{color:var(--text)}.tabbar a[aria-current=page] .ic{color:var(--accent)}
   .toast{bottom:210px}
 }
-@media(max-width:520px){.row{grid-template-columns:40px minmax(0,1fr) 34px 34px 34px;gap:6px}.row .num,.row .dur{display:none}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.acct span{display:none}.auth-card{padding:24px}}
+@media(max-width:520px){.row{grid-template-columns:40px minmax(0,1fr) 32px 32px 32px 32px;gap:4px;padding-right:6px}.row .num,.row .dur{display:none}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.acct span{display:none}.auth-card{padding:24px}}
 @media(prefers-reduced-motion:reduce){html:not([data-motion=full]) *{animation:none!important;transition:none!important}}
 
 
@@ -1039,3 +1042,11 @@ html[data-motion=off] .notif-panel{animation:none}
 
 @media(max-width:430px){.top{gap:6px}.top .acct{padding:0 14px}.top .icon-btn{width:38px;height:38px}}
 @media(max-width:340px){.top #themeBtn{display:none}}
+
+/* ---- 3.28 offline downloads ---- */
+.row .dl-btn{color:var(--muted)}
+.row .dl-btn[data-dl="done"],.expanded-download[data-dl="done"]{color:var(--accent)}
+.row .dl-btn[data-dl="busy"],.expanded-download[data-dl="busy"]{color:var(--accent)}
+.dl-pct{font-size:11px;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.expanded-download{margin-left:auto}
+@media(max-width:380px){.row .queue-add-btn{display:none}.row{grid-template-columns:40px minmax(0,1fr) 32px 32px 32px}}

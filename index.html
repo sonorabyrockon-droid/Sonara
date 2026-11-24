@@ -21,7 +21,7 @@
 /* Apply the saved or system theme before first paint to avoid a flash. */
 (function(){try{var m=localStorage.getItem('sonora-theme-mode')||'system';var t=m==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):m;var a=localStorage.getItem('sonora-theme-accent')||'violet';document.documentElement.dataset.theme=t;document.documentElement.dataset.accent=a;document.querySelector('meta[name=theme-color]').content=t==='light'?'#efeafb':'#0b0914'}catch(e){}})();
 </script>
-<link rel="stylesheet" href="styles.css?v=3.27.0">
+<link rel="stylesheet" href="styles.css?v=3.28.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -51,6 +51,8 @@
 <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol>
 <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
 <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.1A9.7 9.7 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.7A17 17 0 0 0 2 12s4 7 10 7c1.7 0 3.2-.4 4.5-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
+<symbol id="i-downloaded" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
 <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/><path d="M3 4v16h18" opacity=".0"/></symbol>
 </defs></svg>
@@ -91,6 +93,7 @@
       <a href="#/liked" data-nav="liked"><svg class="ic"><use href="#i-heart"/></svg>Liked songs</a>
       <a href="#/playlists" data-nav="playlists"><svg class="ic"><use href="#i-list"/></svg>Playlists</a>
       <a href="#/albums" data-nav="albums"><svg class="ic"><use href="#i-album"/></svg>Albums</a>
+      <a href="#/downloads" data-nav="downloads"><svg class="ic"><use href="#i-download"/></svg>Downloads</a>
       <a href="#/diagnostics" data-nav="diagnostics" id="diagnosticsNav" class="hidden"><svg class="ic"><use href="#i-activity"/></svg>Music Intelligence</a>
       <a href="#/admin" data-nav="admin" id="adminNav" class="hidden"><svg class="ic"><use href="#i-user"/></svg>Admin dashboard</a>
     </nav>
@@ -102,7 +105,6 @@
       <label class="search"><svg class="ic"><use href="#i-search"/></svg><span class="sr">Search music</span><input id="topSearch" type="search" placeholder="Search tracks, artists, genres" autocomplete="off"></label>
       <span class="grow"></span>
       <button class="icon-btn hidden" id="installBtn" type="button" aria-label="Install SONORA app" title="Install SONORA"><svg class="ic"><use href="#i-download"/></svg></button>
-      <button class="icon-btn bell-btn" id="bellBtn" type="button" aria-label="Notifications" aria-haspopup="dialog"><svg class="ic"><use href="#i-bell"/></svg><span class="bell-badge hidden" id="bellBadge" aria-hidden="true"></span></button>
       <button class="icon-btn" id="themeBtn" type="button" aria-label="Switch to light mode"><svg class="ic"><use href="#i-sun"/></svg></button>
       <button class="acct" id="acctBtn" type="button">Sign in</button>
     </header>
@@ -153,6 +155,7 @@
     <div class="expanded-art-wrap"><div class="cover expanded-cover" id="expandedCover" style="--h1:270;--h2:330"><b>S</b></div></div>
     <div class="expanded-trackline">
       <div class="expanded-track-copy"><h2 id="expandedTitle">Nothing playing</h2><p id="expandedArtist">Pick a track to start</p><small id="expandedAlbum">SONORA</small></div>
+      <button class="icon-btn expanded-download hidden" id="expandedDownload" type="button" aria-label="Download for offline listening" data-dl="idle"><svg class="ic"><use href="#i-download"/></svg></button>
       <button class="icon-btn expanded-like" id="expandedLike" type="button" aria-label="Like track" aria-pressed="false"><svg class="ic"><use href="#i-heart"/></svg></button>
     </div>
     <p class="expanded-description hidden" id="expandedDescription"></p>
@@ -178,8 +181,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
-<script src="config.js?v=3.27.0"></script>
-<script src="app.js?v=3.27.0" defer></script>
-<script src="sonora-ux.js?v=3.27.0" defer></script>
+<script src="config.js?v=3.28.0"></script>
+<script src="sonora-offline.js?v=3.28.0" defer></script>
+<script src="app.js?v=3.28.0" defer></script>
+<script src="sonora-ux.js?v=3.28.0" defer></script>
 </body>
 </html>

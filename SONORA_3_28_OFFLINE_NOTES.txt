@@ -1,0 +1,31 @@
+SONORA 3.28 — offline downloads, title-tap fix, notification clean-up (frontend only; no SQL / Worker / config changes)
+
+1. Notifications
+ - Removed the bell from the top bar and the in-app notification panel.
+ - Removed "Send a test". New-release and sleep-timer alerts are sent as real phone notifications.
+ - Turn them on once in Settings > Notifications (browser/phone permission is required).
+   iPhone: Add to Home Screen first. Alerts are sent while SONORA is open or in the background; alerts while the app is fully
+   closed need a push server (VAPID keys + sender), which is not part of this build.
+
+2. Tap on a song title
+ - Cause: the artist line was a full-width link directly under the title, so taps near the title opened the artist page.
+ - Now only the artist's own name is a link. Tapping the title, the cover or any empty part of the row plays the song.
+ - Applies to Home, Search, Liked songs, Playlists, Albums, Artist and Downloads (they share one row component).
+
+3. Encrypted offline downloads (new file: sonora-offline.js)
+ - Download icon on every song row (long-press menu and the full player have it too). Album / Playlist / Liked pages have "Download all".
+ - New Downloads page (sidebar and Playlists page) lists saved songs, shows storage used, plays/shuffles them, removes one or all.
+ - Encryption: AES-GCM-256 in 1 MiB chunks, random IV per chunk, chunk bound to track id + position. The key is created on the
+   device as non-extractable and kept in IndexedDB. Stored data is not a playable file anywhere on the phone and cannot be copied out.
+   Playback decrypts in memory (blob: URL, released when the track changes).
+ - Offline / weak signal: downloaded songs always play from the device copy (no data used). If the catalogue cannot be reached the app
+   opens with your downloads; likes and playlists are cached for offline viewing. The service worker now also caches the CDN libraries
+   and fonts so the app starts with no connection. The sign-in screen is not forced while offline.
+ - Limits: honest note — the key lives in the same browser profile as the app, so this protects against copying/sharing the files and
+   casual access, not against someone with full control of the unlocked app itself. Browsers may evict site storage under pressure
+   (SONORA requests persistent storage). Cached results show only after the first download finished while online.
+
+Deploy: publish all frontend files (new: sonora-offline.js). Open the site once online, hard refresh, then Install app / reopen it.
+Verified in real Chromium: encrypted chunks (no RIFF header), tamper rejection, non-extractable key, offline reload and playback,
+removal purges data, no horizontal overflow at 320 and 390 px.
+- Admin upload limit removed (Worker 3.28.0): no hourly cap unless UPLOADS_PER_HOUR is set. Redeploy the Worker; delete UPLOADS_PER_HOUR in the Cloudflare dashboard if it is set to 12.
