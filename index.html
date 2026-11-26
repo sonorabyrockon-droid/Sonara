@@ -21,7 +21,7 @@
 /* Apply the saved or system theme before first paint to avoid a flash. */
 (function(){try{var m=localStorage.getItem('sonora-theme-mode')||'system';var t=m==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):m;var a=localStorage.getItem('sonora-theme-accent')||'violet';document.documentElement.dataset.theme=t;document.documentElement.dataset.accent=a;document.querySelector('meta[name=theme-color]').content=t==='light'?'#efeafb':'#0b0914'}catch(e){}})();
 </script>
-<link rel="stylesheet" href="styles.css?v=3.29.0">
+<link rel="stylesheet" href="styles.css?v=3.30.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -52,6 +52,7 @@
 <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
 <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.1A9.7 9.7 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.2 3.9M6.6 6.7A17 17 0 0 0 2 12s4 7 10 7c1.7 0 3.2-.4 4.5-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></symbol>
 <symbol id="i-downloaded" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/></symbol>
+<symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M5 13v5a2 2 0 002 2h10a2 2 0 002-2v-5"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
 <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
 <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/><path d="M3 4v16h18" opacity=".0"/></symbol>
@@ -145,6 +146,7 @@
 </footer>
 
 <section class="now-playing-overlay hidden" id="nowPlayingExpanded" role="dialog" aria-modal="true" aria-labelledby="nowPlayingHeading" aria-hidden="true" aria-label="Full music player">
+  <div class="expanded-bg" id="expandedBg" aria-hidden="true"></div>
   <button class="now-playing-backdrop" type="button" id="closeNowPlayingBackdrop" aria-label="Close player"></button>
   <div class="now-playing-panel">
     <header class="now-playing-header">
@@ -181,9 +183,9 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.2"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsmediatags@3.9.7/dist/jsmediatags.min.js"></script>
-<script src="config.js?v=3.29.0"></script>
-<script src="sonora-offline.js?v=3.29.0" defer></script>
-<script src="app.js?v=3.29.0" defer></script>
-<script src="sonora-ux.js?v=3.29.0" defer></script>
+<script src="config.js?v=3.30.0"></script>
+<script src="sonora-offline.js?v=3.30.0" defer></script>
+<script src="app.js?v=3.30.0" defer></script>
+<script src="sonora-ux.js?v=3.30.0" defer></script>
 </body>
 </html>

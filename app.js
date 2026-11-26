@@ -294,6 +294,29 @@ function albumCoverTrack(items) {
   const best = [...counts.values()].sort((a, b) => b.n - a.n || a.i - b.i)[0];
   return best ? best.t : list[0];
 }
+/* ---- 3.30: album categories (from track genres), artist tabs, sortable track tables ---- */
+let albumCat = 'All', artistTab = 'albums', trackSort = { key:'', dir:1 };
+function albumCategory(album) {
+  const counts = new Map();
+  (album.tracks || []).forEach((t) => { const g = String(t.genre || '').trim(); if (g) counts.set(g, (counts.get(g) || 0) + 1); });
+  const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  return best ? best[0] : 'Other';
+}
+function sortedTracks(list) {
+  if (!trackSort.key) return list;
+  const k = trackSort.key, d = trackSort.dir;
+  const val = (t) => k === 'dur' ? Number(t.duration) || 0 : String(k === 'album' ? t.album : t.title || '').toLowerCase();
+  return [...list].sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * d; });
+}
+function sortableRows(list, ctx) {
+  const arrow = (k) => trackSort.key === k ? (trackSort.dir > 0 ? ' ▲' : ' ▼') : '';
+  const btn = (k, label) => `<button type="button" class="rows-sort${trackSort.key === k ? ' on' : ''}" data-act="sort-tracks" data-key="${k}" aria-label="Sort by ${label}">${label}${arrow(k)}</button>`;
+  return `<div class="rows-head" role="group" aria-label="Sort tracks"><span>#</span><span></span>${btn('title', 'Title')}${btn('album', 'Album')}${btn('dur', 'Time')}</div>${rows(sortedTracks(list), ctx)}`;
+}
+const sharePage = async () => {
+  try { await navigator.clipboard.writeText(location.href); notify('Link copied.'); }
+  catch { prompt('Copy this link', location.href); }
+};
 function albumArtwork(items, label = 'Album') {
   const t = albumCoverTrack(items);
   return collectionArtwork(t ? [t] : [], label);
@@ -1472,9 +1495,14 @@ const views = {
     ${list.length ? `<div class="sec-head"><div><h2>On this device</h2><p>Tap the check beside a song to remove its download.</p></div></div>${rows(list, 'downloads')}` : empty('No downloads yet', offlineOK() ? 'Tap the download icon beside any song to save it for offline listening.' : 'This browser cannot store songs offline.')}</div>`;
   },
   albums() {
-    const albums = albumEntries();
-    return `<div class="page library-page"><div class="kicker">YOUR LIBRARY</div><h1>Albums & soundtracks</h1><p class="lede">Tracks with matching album or movie soundtrack metadata are automatically grouped here.</p>
-      ${albums.length ? `<div class="grid collection-grid">${albums.map((album) => `<a class="card collection-card" href="#/album/${encodeURIComponent(album.id)}" data-act="open-album" data-album-id="${esc(album.id)}" style="text-decoration:none;color:inherit">${albumArtwork(album.tracks, album.name)}<span class="t">${esc(album.name)}</span><span class="s">${album.tracks.length} ${album.tracks.length===1?'track':'tracks'} · ${[...new Set(album.tracks.map(t=>t.artist))].length>1?'Various artists':esc(album.tracks[0]?.artist||'Album')}</span></a>`).join('')}</div>` : empty('No albums yet', 'As tracks are added with album or movie soundtrack metadata, SONORA groups them into album collections automatically.')}</div>`;
+    const all = albumEntries().map((album) => ({ ...album, category: albumCategory(album) }));
+    const cats = [...new Set(all.map((a) => a.category))].sort((a, b) => a.localeCompare(b));
+    if (albumCat !== 'All' && !cats.includes(albumCat)) albumCat = 'All';
+    const albums = albumCat === 'All' ? all : all.filter((a) => a.category === albumCat);
+    const chip = (name, n) => `<button type="button" class="tab-pill${albumCat === name ? ' on' : ''}" data-act="album-cat" data-cat="${esc(name)}" aria-pressed="${albumCat === name}">${esc(name)}<small>${n}</small></button>`;
+    return `<div class="page library-page"><div class="kicker">YOUR LIBRARY</div><h1>Albums & soundtracks</h1><p class="lede">Albums are grouped automatically and sorted into categories by the genre of their tracks.</p>
+      ${all.length ? `<div class="tab-pills" role="group" aria-label="Album categories">${chip('All', all.length)}${cats.map((c) => chip(c, all.filter((a) => a.category === c).length)).join('')}</div>
+      <div class="grid collection-grid">${albums.map((album) => `<a class="card collection-card" href="#/album/${encodeURIComponent(album.id)}" data-act="open-album" data-album-id="${esc(album.id)}" style="text-decoration:none;color:inherit">${albumArtwork(album.tracks, album.name)}<span class="cat-tag">${esc(album.category)}</span><span class="t">${esc(album.name)}</span><span class="s">${album.tracks.length} ${album.tracks.length===1?'track':'tracks'} · ${[...new Set(album.tracks.map(t=>t.artist))].length>1?'Various artists':esc(album.tracks[0]?.artist||'Album')}</span></a>`).join('')}</div>` : empty('No albums yet', 'As tracks are added with album or movie soundtrack metadata, SONORA groups them into album collections automatically.')}</div>`;
   },
   album(id) {
     const album = albumById(id);
@@ -1482,18 +1510,31 @@ const views = {
     const ctx = `album:${album.id}`, n = album.tracks.length, total = fmtTotal(album.tracks);
     const genresOf = [...new Set(album.tracks.map((t) => t.genre).filter(Boolean))].slice(0, 3).join(', ');
     const allLiked = album.tracks.every((t) => liked.has(t.id));
-    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK</span><h1>${esc(album.name)}</h1><p class="lede">${artistLinks(album.tracks)} · ${n} ${n === 1 ? 'track' : 'tracks'}${total ? ` · ${total}` : ''}${genresOf ? ` · ${esc(genresOf)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}">Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}">${ic('queue')}Add to queue</button>${dlAllButton(ctx)}<button class="btn btn-glass" data-act="album-playlist" data-album-id="${esc(album.id)}">${ic('plus')}Add to playlist</button><button class="btn btn-glass" data-act="album-like" data-album-id="${esc(album.id)}" aria-pressed="${allLiked}">${ic(allLiked ? 'heart-fill' : 'heart')}${allLiked ? 'Unlike album' : 'Like album'}</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
-      <div class="sec-head"><div><h2>Track list</h2><p>All catalogue tracks recognised as part of this album.</p></div></div>${rows(album.tracks, ctx)}</div>`;
+    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(album.tracks, album.name)}<div class="collection-hero-copy"><span class="kicker">ALBUM / SOUNDTRACK · ${esc(albumCategory(album)).toUpperCase()}</span><h1>${esc(album.name)}</h1><p class="lede">${artistLinks(album.tracks)} · ${n} ${n === 1 ? 'track' : 'tracks'}${total ? ` · ${total}` : ''}${genresOf ? ` · ${esc(genresOf)}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button><button class="btn btn-glass" data-act="queue-next-ctx" data-ctx="${esc(ctx)}">Play next</button><button class="btn btn-glass" data-act="queue-all-ctx" data-ctx="${esc(ctx)}">${ic('queue')}Add to queue</button>${dlAllButton(ctx)}<button class="btn btn-glass" data-act="album-playlist" data-album-id="${esc(album.id)}">${ic('plus')}Add to playlist</button><button class="btn btn-glass" data-act="album-like" data-album-id="${esc(album.id)}" aria-pressed="${allLiked}">${ic(allLiked ? 'heart-fill' : 'heart')}${allLiked ? 'Unlike album' : 'Like album'}</button>${isAdmin ? `<button class="btn btn-glass" data-act="album-cover" data-album-id="${esc(album.id)}">Set album cover</button>` : ''}</div></div></section>
+      <div class="sec-head"><div><h2>Track list</h2><p>All catalogue tracks recognised as part of this album.</p></div></div>${sortableRows(album.tracks, ctx)}</div>`;
   },
   artist(id) {
     const list = artistTracks(id || '');
     if (!list.length) return `<div class="page"><h1>Artist not found</h1><p class="lede">No tracks by this artist are in the catalogue.</p><a class="btn btn-glass" href="#/home" style="text-decoration:none">Back home</a></div>`;
     const name = list[0].artist, ctx = `artist:${albumKey(name)}`;
     const groups = new Map(); list.forEach((t) => { const n = String(t.album || '').trim(); if (!n || /^single$/i.test(n)) return; const k = albumGroupKey(n); if (!groups.has(k)) groups.set(k, { id:k, name:n, tracks:[] }); groups.get(k).tracks.push(t); });
-    const albums = [...groups.values()];
-    return `<div class="page library-page"><section class="collection-hero glass">${albumArtwork(list, name)}<div class="collection-hero-copy"><span class="kicker">ARTIST</span><h1>${esc(name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'track' : 'tracks'}${albums.length ? ` · ${albums.length} ${albums.length === 1 ? 'album' : 'albums'}` : ''}</p><div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button></div></div></section>
-      ${albums.length ? `<div class="sec-head"><div><h2>Albums</h2></div></div><div class="grid collection-grid">${albums.map((a) => `<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" data-act="open-album" data-album-id="${esc(a.id)}" style="text-decoration:none;color:inherit">${albumArtwork(a.tracks, a.name)}<span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length === 1 ? 'track' : 'tracks'}</span></a>`).join('')}</div>` : ''}
-      <div class="sec-head"><div><h2>All tracks</h2></div></div>${rows(list, ctx)}</div>`;
+    const albums = [...groups.values()].map((a) => ({ ...a, category: albumCategory(a) }));
+    const singles = list.filter((t) => { const n = String(t.album || '').trim(); return !n || /^single$/i.test(n); });
+    if (artistTab === 'singles' && !singles.length) artistTab = 'albums';
+    if (artistTab === 'albums' && !albums.length && singles.length) artistTab = 'singles';
+    const coverT = albumCoverTrack(list), h1 = hue(name), cats = [...new Set(list.map((t) => t.genre).filter(Boolean))].slice(0, 2).join(' · ');
+    const latest = [...albums].sort((a, b) => String(b.tracks[0]?.createdAt || '').localeCompare(String(a.tracks[0]?.createdAt || '')))[0];
+    const tab = (k, label, n) => n ? `<button type="button" class="tab-pill${artistTab === k ? ' on' : ''}" data-act="artist-tab" data-tab="${k}" aria-pressed="${artistTab === k}">${label}<small>${n}</small></button>` : '';
+    const side = latest ? `<aside class="artist-side glass" aria-label="Featured album"><span class="kicker">LATEST ALBUM</span>${albumArtwork(latest.tracks, latest.name)}<h3>${esc(latest.name)}</h3><p class="muted">${latest.tracks.length} ${latest.tracks.length === 1 ? 'song' : 'songs'} · ${esc(latest.category)}${fmtTotal(latest.tracks) ? ` · ${fmtTotal(latest.tracks)}` : ''}</p>
+        <button class="btn btn-primary" type="button" data-act="playctx" data-ctx="album:${esc(latest.id)}">${ic('play')}Play album</button>
+        <div class="mini-list">${latest.tracks.slice(0, 8).map((t) => `<button type="button" class="mini-row" data-act="playcard" data-id="${esc(t.id)}" data-ctx="album:${esc(latest.id)}">${cover(t)}<span><b>${esc(t.title)}</b><small>${esc(t.artist)}</small></span><em>${t.duration ? fmt(t.duration) : ''}</em></button>`).join('')}</div></aside>` : '';
+    return `<div class="page library-page artist-page"><div class="artist-layout"><div class="artist-main">
+      <section class="artist-hero" style="--h1:${h1};--h2:${(h1 + 50) % 360}">${coverT?.coverUrl ? `<span class="artist-hero-bg" style="background-image:url('${esc(coverT.coverUrl)}')"></span>` : ''}<div class="artist-hero-copy"><span class="kicker">ARTIST</span><h1>${esc(name)}</h1><p class="lede">${list.length} ${list.length === 1 ? 'track' : 'tracks'}${albums.length ? ` · ${albums.length} ${albums.length === 1 ? 'album' : 'albums'}` : ''}${cats ? ` · ${esc(cats)}` : ''}</p>
+        <div class="acts"><button class="btn btn-primary" data-act="playctx" data-ctx="${esc(ctx)}">${ic('play')}Play</button><button class="btn btn-glass" data-act="playctx-shuffle" data-ctx="${esc(ctx)}">${ic('shuffle')}Shuffle</button><button class="btn btn-glass" type="button" data-act="share-page">${ic('share')}Share</button></div></div></section>
+      <div class="sec-head"><div><h2>Tracks</h2></div></div>${sortableRows(list, ctx)}
+      ${albums.length || singles.length ? `<div class="sec-head"><div><h2>Discography</h2></div></div><div class="tab-pills" role="group" aria-label="Discography">${tab('albums', 'Albums', albums.length)}${tab('singles', 'Singles', singles.length)}</div>
+        ${artistTab === 'singles' ? `<div class="grid">${singles.map((t) => card(t, ctx)).join('')}</div>` : `<div class="grid collection-grid">${albums.map((a) => `<a class="card collection-card" href="#/album/${encodeURIComponent(a.id)}" data-act="open-album" data-album-id="${esc(a.id)}" style="text-decoration:none;color:inherit">${albumArtwork(a.tracks, a.name)}<span class="cat-tag">${esc(a.category)}</span><span class="t">${esc(a.name)}</span><span class="s">${a.tracks.length} ${a.tracks.length === 1 ? 'track' : 'tracks'}</span></a>`).join('')}</div>`}` : ''}
+    </div>${side}</div></div>`;
   },
   preferences() {
     if (!user) return `<div class="page">${empty('Sign in required','Sign in to save your music preferences.')}</div>`;
@@ -1662,6 +1703,28 @@ function renderExpandedQueue() {
   if(!ids.length){target.innerHTML='<p class="muted">Your queue is empty. Play an album or playlist to build your queue.</p>';return;}
   target.innerHTML=ids.map((id,index)=>{const t=byId(id);if(!t)return '';const current=t.id===active?.id;return `<div class="expanded-queue-row${current?' is-current':''}"><button type="button" class="expanded-queue-item" data-queue-play="${esc(t.id)}"><span class="expanded-queue-index">${current?ic('play'):index+1}</span>${cover(t,'queue-cover')}<span class="expanded-queue-copy"><strong>${esc(t.title)}</strong><small>${esc(t.artist)}</small></span>${current?'<span class="queue-current-label">PLAYING</span>':''}</button>${!current?`<button type="button" class="icon-btn queue-remove" data-queue-remove="${esc(t.id)}" aria-label="Remove ${esc(t.title)} from queue">${ic('x')}</button>`:''}</div>`;}).join('');
 }
+/* ---- 3.30: cover-flow player (swipe through neighbouring songs) + blurred cover background ---- */
+let cfDir = 0;
+function renderCoverFlow() {
+  const wrap = document.querySelector('.expanded-art-wrap'); if (!wrap) return;
+  wrap.classList.add('cf-wrap');
+  wrap.querySelectorAll('.cf-side').forEach((el) => el.remove());
+  const ids = queue.length ? queue : tracks.map((t) => t.id), i = ids.indexOf(active?.id);
+  if (i < 0) return;
+  [[-2, 'cf-l2'], [-1, 'cf-l1'], [1, 'cf-r1'], [2, 'cf-r2']].forEach(([off, cls]) => {
+    const t = byId(ids[i + off]); if (!t) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = `cf-side ${cls}`; b.dataset.cf = t.id; b.tabIndex = -1;
+    b.setAttribute('aria-label', `Play ${t.title} by ${t.artist}`); b.innerHTML = cover(t); wrap.appendChild(b);
+  });
+  if (cfDir) { wrap.dataset.dir = cfDir > 0 ? 'next' : 'prev'; wrap.classList.remove('cf-anim'); void wrap.offsetWidth; wrap.classList.add('cf-anim'); cfDir = 0; }
+}
+function syncExpandedBackground() {
+  const bg = $('expandedBg'); if (!bg || !active) return;
+  const h = hue(active.id);
+  bg.style.backgroundImage = active.coverUrl
+    ? `url("${active.coverUrl}")`
+    : `radial-gradient(circle at 30% 25%, hsl(${h} 80% 52%), transparent 60%), radial-gradient(circle at 75% 80%, hsl(${(h + 60) % 360} 80% 48%), transparent 60%)`;
+}
 function syncExpandedPlayer() {
   const overlay=$('nowPlayingExpanded'); if(!overlay)return;
   const t=active;
@@ -1673,7 +1736,7 @@ function syncExpandedPlayer() {
   if(!$('expandedSeek').matches(':active')){$('expandedSeek').value=dur?String(Math.round((audio.currentTime/dur)*1000)):0;$('expandedSeek').style.setProperty('--p',`${dur?Math.max(0,Math.min(1,audio.currentTime/dur))*100:0}%`);}
   if($('playbackSpeed'))$('playbackSpeed').value=String(audio.playbackRate||1);
   if($('expandedVolume')&&!$('expandedVolume').matches(':active'))$('expandedVolume').value=String(Math.round(audio.volume*100));
-  syncPlayerControls();syncLike();
+  syncPlayerControls();syncLike();renderCoverFlow();syncExpandedBackground();
 }
 let nowPlayingReturnFocus=null;
 function openNowPlaying(showQueue=false) {
@@ -1771,6 +1834,7 @@ function step(dir, auto) {
   let n;
   if (shuffle && queue.length > 1) { do { n = Math.floor(Math.random() * queue.length); } while (n === i); }
   else n = (i + dir + queue.length) % queue.length;
+  cfDir = dir;
   const t = byId(queue[n]); if (t) load(t, true);
 }
 function restoreLast() {
@@ -1857,6 +1921,17 @@ $('repeat').addEventListener('click', cycleRepeat);
 $('npLike').addEventListener('click', () => active && toggleLike(active.id));
 $('openNowPlaying').addEventListener('click', () => openNowPlaying(false));
 $('queueBtn').addEventListener('click', () => openNowPlaying(true));
+(() => {
+  const wrap = document.querySelector('.expanded-art-wrap'); if (!wrap) return;
+  let x0 = null;
+  wrap.addEventListener('pointerdown', (e) => { x0 = e.clientX; });
+  wrap.addEventListener('pointerup', (e) => {
+    if (x0 === null) return; const dx = e.clientX - x0; x0 = null;
+    if (Math.abs(dx) > 45) { step(dx < 0 ? 1 : -1); return; }
+    const side = e.target.closest?.('.cf-side'); if (side) play(side.dataset.cf);
+  });
+  wrap.addEventListener('pointercancel', () => { x0 = null; });
+})();
 $('expandedQueueToggle').addEventListener('click', () => showExpandedQueue($('expandedQueue').classList.contains('hidden')));
 $('expandedQueueClose').addEventListener('click', () => showExpandedQueue(false));
 $('clearQueue').addEventListener('click',clearUpcomingQueue);
@@ -2129,6 +2204,10 @@ $('view').addEventListener('click', (e) => {
       case 'upload-cancel-all': uploadQueue.forEach(cancelUploadItem); break;
       case 'storage-scan': runStorageCleanup(true); break;
       case 'storage-clean': runStorageCleanup(false); break;
+      case 'album-cat': albumCat = a.dataset.cat || 'All'; render(); break;
+      case 'artist-tab': artistTab = a.dataset.tab || 'albums'; render(); break;
+      case 'sort-tracks': { const k = a.dataset.key; trackSort = trackSort.key === k ? (trackSort.dir > 0 ? { key:k, dir:-1 } : { key:'', dir:1 }) : { key:k, dir:1 }; render(); break; }
+      case 'share-page': sharePage(); break;
       case 'upload-clear': uploadQueue = []; paintUploadQueue(); break;
       case 'like': toggleLike(id); break;
       case 'queue-add': addToQueue(id); break;

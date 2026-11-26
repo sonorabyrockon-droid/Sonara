@@ -1,0 +1,19 @@
+SONORA 3.30 — UI inspired by the Fomu (desktop) and Spotify-style (mobile) reference screens. Frontend only: no SQL / Worker changes.
+
+1. Album categories
+ - Albums page has category chips (All + one per category, with counts). Each album card shows its category tag.
+ - A category is taken automatically from the most common Genre of the album's tracks (edit a track's Genre in Admin to move an album).
+ - Album page header shows the category; artist-page album cards show it too.
+2. Cover-flow full player
+ - Open the full player: the current cover is centred, the previous/next songs of your queue peek in from both sides.
+   Swipe left/right (or tap a side cover) to change song.
+ - Background is a blurred, colour-matched version of the current cover (gradient fallback when there is no cover).
+3. Artist page
+ - Hero banner (artist cover + big name + counts/genres) with Play / Shuffle / Share (copies link).
+ - Sortable track table (click Title / Album / Time: ascending, descending, off).
+ - Discography tabs: Albums / Singles.
+ - Desktop (>=1280px): sticky "Latest album" side panel with cover, Play album and a compact song list.
+ - Sortable headers also on the album page.
+Not added on purpose: price / buy / cart / subscribe items from the reference (SONORA is not a store).
+Deploy: publish all frontend files (cache name sonora-shell-v3-30-0), hard refresh once.
+Verified in Chromium: category filter, tabs, sort, cover-flow tap, no horizontal overflow at 390 px.
